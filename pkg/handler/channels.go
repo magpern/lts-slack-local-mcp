@@ -11,7 +11,6 @@ import (
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider"
 	"github.com/slack-go/slack"
 	"github.com/magpern/lts-slack-local-mcp/pkg/server/auth"
-	"github.com/magpern/lts-slack-local-mcp/pkg/text"
 	"github.com/mark3labs/mcp-go/mcp"
 	"go.uber.org/zap"
 )
@@ -60,21 +59,6 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 		return nil, err
 	}
 
-	ar, err := ch.apiProvider.Slack().AuthTest()
-	if err != nil {
-		ch.logger.Error("Auth test failed", zap.Error(err))
-		return nil, err
-	}
-
-	ws, err := text.Workspace(ar.URL)
-	if err != nil {
-		ch.logger.Error("Failed to parse workspace from URL",
-			zap.String("url", ar.URL),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to parse workspace from URL: %v", err)
-	}
-
 	channels := ch.apiProvider.ProvideChannelsMaps().Channels
 	ch.logger.Debug("Retrieved channels from provider", zap.Int("count", len(channels)))
 
@@ -96,7 +80,7 @@ func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.Rea
 
 	return []mcp.ResourceContents{
 		mcp.TextResourceContents{
-			URI:      "slack://" + ws + "/channels",
+			URI:      request.Params.URI,
 			MIMEType: "text/csv",
 			Text:     string(csvBytes),
 		},

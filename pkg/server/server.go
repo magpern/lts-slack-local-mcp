@@ -12,7 +12,6 @@ import (
 	"github.com/magpern/lts-slack-local-mcp/pkg/handler"
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider"
 	"github.com/magpern/lts-slack-local-mcp/pkg/server/auth"
-	"github.com/magpern/lts-slack-local-mcp/pkg/text"
 	"github.com/magpern/lts-slack-local-mcp/pkg/version"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -47,6 +46,10 @@ const (
 	ToolSavedList                   = "saved_list"
 	ToolSavedUpdate                 = "saved_update"
 	ToolSavedClearCompleted         = "saved_clear_completed"
+
+	// Always registered; deliberately not part of ValidToolNames.
+	ToolLogin  = "login"
+	ToolLogout = "logout"
 )
 
 var ValidToolNames = []string{
@@ -123,6 +126,24 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		server.WithToolHandlerMiddleware(buildLoggerMiddleware(logger)),
 		server.WithToolHandlerMiddleware(auth.BuildMiddleware(provider.ServerTransport(), logger)),
 	)
+
+	// login/logout are always registered: an enabled-tools allow-list must never
+	// lock the user out of signing in, and the server starts signed out.
+	sessionHandler := handler.NewSessionHandler(provider, logger)
+	s.AddTool(mcp.NewTool(ToolLogin,
+		mcp.WithDescription("Sign in to Slack through a dedicated browser profile. The first sign-in opens a browser window for your Slack single sign-on; later sign-ins are silent. Also use it to switch accounts or after being signed out."),
+		mcp.WithTitleAnnotation("Sign in to Slack"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
+	), sessionHandler.LoginHandler)
+	s.AddTool(mcp.NewTool(ToolLogout,
+		mcp.WithDescription("Forget the Slack session: deletes this tool's browser profile and this account's cached data, and keeps the server signed out (even after a restart) until login is called. Does not sign you out of Slack elsewhere or revoke the session at Slack."),
+		mcp.WithTitleAnnotation("Sign out of Slack"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(false),
+	), sessionHandler.LogoutHandler)
 
 	conversationsHandler := handler.NewConversationsHandler(provider, logger)
 
@@ -591,43 +612,17 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		}
 	}
 
-	logger.Info("Authenticating with Slack API...",
-		zap.String("context", "console"),
-	)
-	ar, err := provider.Slack().AuthTest()
-	if err != nil {
-		logger.Fatal("Failed to authenticate with Slack",
-			zap.String("context", "console"),
-			zap.Error(err),
-		)
-	}
-
-	logger.Info("Successfully authenticated with Slack",
-		zap.String("context", "console"),
-		zap.String("team", ar.Team),
-		zap.String("user", ar.User),
-		zap.String("enterprise", ar.EnterpriseID),
-		zap.String("url", ar.URL),
-	)
-
-	ws, err := text.Workspace(ar.URL)
-	if err != nil {
-		logger.Fatal("Failed to parse workspace from URL",
-			zap.String("context", "console"),
-			zap.String("url", ar.URL),
-			zap.Error(err),
-		)
-	}
-
+	// Resources use workspace-independent URIs so the server can start (and stay
+	// usable for login/logout) while signed out; nothing here contacts Slack.
 	s.AddResource(mcp.NewResource(
-		"slack://"+ws+"/channels",
+		"slack://workspace/channels",
 		"Directory of Slack channels",
 		mcp.WithResourceDescription("This resource provides a directory of Slack channels."),
 		mcp.WithMIMEType("text/csv"),
 	), channelsHandler.ChannelsResource)
 
 	s.AddResource(mcp.NewResource(
-		"slack://"+ws+"/users",
+		"slack://workspace/users",
 		"Directory of Slack users",
 		mcp.WithResourceDescription("This resource provides a directory of Slack users."),
 		mcp.WithMIMEType("text/csv"),

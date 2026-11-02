@@ -159,22 +159,6 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 		return nil, err
 	}
 
-	// Slack auth test
-	ar, err := ch.apiProvider.Slack().AuthTest()
-	if err != nil {
-		ch.logger.Error("Slack AuthTest failed", zap.Error(err))
-		return nil, err
-	}
-
-	ws, err := text.Workspace(ar.URL)
-	if err != nil {
-		ch.logger.Error("Failed to parse workspace from URL",
-			zap.String("url", ar.URL),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("failed to parse workspace from URL: %v", err)
-	}
-
 	// collect users
 	usersMaps := ch.apiProvider.ProvideUsersMap()
 	users := usersMaps.Users
@@ -196,7 +180,7 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 
 	return []mcp.ResourceContents{
 		mcp.TextResourceContents{
-			URI:      "slack://" + ws + "/users",
+			URI:      request.Params.URI,
 			MIMEType: "text/csv",
 			Text:     string(csvBytes),
 		},

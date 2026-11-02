@@ -7,9 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/magpern/lts-slack-local-mcp/pkg/auth"
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider"
 	"github.com/magpern/lts-slack-local-mcp/pkg/server"
 	"github.com/mattn/go-isatty"
@@ -68,7 +68,13 @@ func main() {
 		)
 	}
 
-	p := provider.New(transport, logger)
+	p, err := newProvider(transport, logger)
+	if err != nil {
+		logger.Fatal("Failed to initialise session state",
+			zap.String("context", "console"),
+			zap.Error(err),
+		)
+	}
 	s := server.NewMCPServer(p, logger, enabledTools)
 
 	if noCache {
@@ -76,26 +82,31 @@ func main() {
 		logger.Info("Cache loading disabled via --no-cache flag",
 			zap.String("context", "console"),
 		)
-	} else {
-		go func() {
-			var once sync.Once
+	}
 
-			newUsersWatcher(p, &once, logger)()
-			newChannelsWatcher(p, &once, logger)()
+	// Reconnect in the background if a previous login exists. This is headless
+	// only and never opens a window; failure is not fatal because the server
+	// must stay usable (login/logout) while signed out.
+	if p.Session().SignedOut() {
+		logger.Info("Signed out; call the login tool to sign in",
+			zap.String("context", "console"))
+	} else if p.Session().Pin() != nil || hasEnvCredential() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			if err := p.Connect(ctx); err != nil {
+				logger.Warn("Not connected to Slack yet; call the login tool",
+					zap.String("context", "console"),
+					zap.Error(err))
+			}
 		}()
+	} else {
+		logger.Info("No Slack account linked yet; call the login tool to sign in",
+			zap.String("context", "console"))
 	}
 
 	switch transport {
 	case "stdio":
-		// Wait for caches to be ready before accepting stdio requests.
-		// With stale-while-revalidate this exits in one tick (~100ms).
-		// On cold start (no cache), this blocks until the initial fetch completes.
-		for {
-			if ready, _ := p.IsReady(); ready {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
 		if err := s.ServeStdio(); err != nil {
 			logger.Fatal("Server error",
 				zap.String("context", "console"),
@@ -171,68 +182,29 @@ func main() {
 	}
 }
 
-func newUsersWatcher(p *provider.ApiProvider, once *sync.Once, logger *zap.Logger) func() {
-	return func() {
-		logger.Info("Caching users collection...",
-			zap.String("context", "console"),
-		)
-
-		if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
-			logger.Info("Demo credentials are set, skip",
-				zap.String("context", "console"),
-			)
-			return
-		}
-
-		err := p.RefreshUsers(context.Background())
-		if err != nil {
-			logger.Fatal("Error booting provider",
-				zap.String("context", "console"),
-				zap.Error(err),
-			)
-		}
-
-		ready, _ := p.IsReady()
-		if ready {
-			once.Do(func() {
-				logger.Info("Slack MCP Server is fully ready",
-					zap.String("context", "console"),
-				)
-			})
-		}
+// newProvider wires the session lifecycle: environment credentials (if set) are
+// an optional static override; otherwise the dedicated browser profile is used.
+func newProvider(transport string, logger *zap.Logger) (*provider.ApiProvider, error) {
+	cfg := auth.ConfigFromEnv()
+	store, err := auth.OpenStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
 	}
+	var harv auth.Harvester = auth.NewRodHarvester(cfg, logger)
+	envCred, haveEnv := auth.EnvCredential()
+	if haveEnv {
+		harv = auth.StaticHarvester{Cred: envCred}
+	}
+	sess := auth.NewSessionAuth(cfg, store, harv, auth.NewSlackValidator(logger), logger)
+	if haveEnv {
+		sess.AllowAutoFirstLogin() // static credentials: no browser, safe to connect unattended
+	}
+	return provider.NewLocal(transport, logger, sess), nil
 }
 
-func newChannelsWatcher(p *provider.ApiProvider, once *sync.Once, logger *zap.Logger) func() {
-	return func() {
-		logger.Info("Caching channels collection...",
-			zap.String("context", "console"),
-		)
-
-		if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
-			logger.Info("Demo credentials are set, skip.",
-				zap.String("context", "console"),
-			)
-			return
-		}
-
-		err := p.RefreshChannels(context.Background())
-		if err != nil {
-			logger.Fatal("Error booting provider",
-				zap.String("context", "console"),
-				zap.Error(err),
-			)
-		}
-
-		ready, _ := p.IsReady()
-		if ready {
-			once.Do(func() {
-				logger.Info("Slack MCP Server is fully ready.",
-					zap.String("context", "console"),
-				)
-			})
-		}
-	}
+func hasEnvCredential() bool {
+	_, ok := auth.EnvCredential()
+	return ok
 }
 
 func validateToolConfig(config string) error {
@@ -267,7 +239,8 @@ func newLogger(transport string) (*zap.Logger, error) {
 	atomicLevel := zap.NewAtomicLevelAt(zap.InfoLevel)
 	if envLevel := os.Getenv("SLACK_MCP_LOG_LEVEL"); envLevel != "" {
 		if err := atomicLevel.UnmarshalText([]byte(envLevel)); err != nil {
-			fmt.Printf("Invalid log level '%s': %v, using 'info'\n", envLevel, err)
+			// stderr only: stdout carries the stdio JSON-RPC protocol stream.
+			fmt.Fprintf(os.Stderr, "Invalid log level '%s': %v, using 'info'\n", envLevel, err)
 		}
 	}
 

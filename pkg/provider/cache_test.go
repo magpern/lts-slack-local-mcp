@@ -312,10 +312,11 @@ func TestRefreshOnErrorPattern(t *testing.T) {
 
 // TestGetCacheDir verifies the cache directory is created correctly.
 func TestGetCacheDir(t *testing.T) {
-	dir := getCacheDir()
+	dir, err := getCacheDir()
+	require.NoError(t, err)
 
 	assert.NotEmpty(t, dir, "cache dir should not be empty")
-	assert.Contains(t, dir, "slack-mcp-server", "cache dir should contain app name")
+	assert.Contains(t, dir, "lts-slack-local-mcp", "cache dir should contain app name")
 
 	// Directory should exist after getCacheDir() creates it
 	info, err := os.Stat(dir)

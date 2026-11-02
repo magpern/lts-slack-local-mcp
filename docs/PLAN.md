@@ -232,5 +232,33 @@ of public docs and git history.
 
 ## Change Log
 
-- (none yet) — deviations from this frozen plan will be recorded here with reason
-  and impact.
+Deviations from the frozen plan, each with reason and impact.
+
+1. **Unattended re-acquire is headless-only; a visible window opens only from an
+   explicit `login`.** Reason: an unattended window mid-tool-call surprises the
+   user and can outlast an MCP client's call timeout. Impact: first run (no pinned
+   identity) returns "call login" instead of blocking; the plan's "headless first,
+   visible window only if nothing valid came back" now applies to `login`.
+   Environment-supplied static credentials are exempt (no browser involved).
+2. **Resources use workspace-independent URIs** (`slack://workspace/channels`,
+   `slack://workspace/users`) instead of embedding the workspace host. Reason:
+   upstream authenticated during server construction to learn the host, which made
+   signed-out startup impossible (a P1 requirement). Impact: resource URIs differ
+   from upstream.
+3. **Cache files are namespaced by workspace *and* user and never fall back to the
+   working directory** (`<team>_<user>_users_cache.json`). Reason: two accounts in
+   one workspace must not share cached data; the cache holds personal data.
+4. **Upstream's `demo` credential mode is removed.** Reason: it bypassed
+   authentication in several places and has no use in a local tool.
+5. **Integration tests that required a paid third-party API and a tunnel to a
+   third party (OpenAI + ngrok), and their Unix-only harness, were removed**
+   (Phase 4 item, done early because the handler package could not compile its
+   tests on Windows without it).
+6. **A persisted `profile_dirty` flag** was added to the signed-out state so a
+   browser profile that survived a failed logout can never be reused, even after a
+   restart. Reason: "no residual-profile reuse" must hold across process restarts.
+7. **Windows ACL hardening grants the owner by SID before removing inheritance.**
+   Reason: the first implementation granted by `DOMAIN\user` name, which does not
+   resolve for Azure AD accounts, and had already removed inherited access —
+   leaving the directory inaccessible. Found by an end-to-end protocol probe and
+   fixed with regression tests.
