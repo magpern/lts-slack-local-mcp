@@ -16,9 +16,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
       - name: Tag must match VERSION
         run: test "v$(tr -d '[:space:]' < VERSION)" = "${GITHUB_REF_NAME}"
-      - run: go test ./...
+      - run: go vet ./... && go test ./...
+      - name: Vulnerability gate
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 && govulncheck ./...
+      - name: Third-party licenses are current
+        run: scripts/gen-licenses.sh && git diff --exit-code THIRD_PARTY_LICENSES.md
       - name: Package
         run: |
           for t in windows:amd64 windows:arm64 linux:amd64 linux:arm64 darwin:amd64 darwin:arm64; do

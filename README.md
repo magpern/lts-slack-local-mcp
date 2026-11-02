@@ -40,9 +40,18 @@ was verified about browser-session reuse.
 
 ## Install
 
-Requires Microsoft Edge or Google Chrome and the Claude Code CLI.
+Requires Microsoft Edge or Google Chrome and the Claude Code CLI. There is no automatic
+browser download.
 
-From a release (once one is published), on Windows:
+**Platform status (honest):** Windows x64 is the only platform where the packaged install and the
+browser launch have been run (in an isolated sandbox profile on a real machine). A real
+Slack sign-in has not been run yet by the author on any platform. The other targets (Windows arm64,
+Linux, macOS) are build-verified only: the binaries compile, but their install and
+browser sign-in have not been run. Treat them as untested.
+
+From a release (none is published yet), clone this repository for the installer scripts
+and run, on Windows (PowerShell 7 or Windows PowerShell; you may need
+`Set-ExecutionPolicy -Scope Process Bypass` or to unblock the downloaded script):
 
 ```powershell
 .\scripts\install.ps1 -Mode plugin
@@ -55,17 +64,33 @@ scripts/install.sh --mode plugin
 ```
 
 `-Mode mcp` / `--mode mcp` registers only the MCP server instead of the plugin. The
-installer downloads the release zip for your platform, verifies its SHA-256 against the
-release's `SHA256SUMS`, and refuses to proceed on a mismatch. Release assets also carry a
-build-provenance attestation. Restart Claude Code, then ask it to call the Slack `login`
-tool.
+installer downloads the zip for your platform and the release's `SHA256SUMS`, refuses to
+proceed unless the hash matches, rejects archives with unsafe paths, and replaces a
+previous install. **The checksum only detects corruption in transit:** the zip and the
+checksum file come from the same release, so they do not prove who built them. Release
+assets carry a build-provenance attestation; verify it yourself with
+`gh attestation verify <zip> --repo magpern/lts-slack-local-mcp`. Restart Claude Code, then
+ask it to call the Slack `login` tool.
 
-From source (Go, see `go.mod` for the version):
+Do not install the marketplace straight from this repository's root: the source tree has
+no built binary. Use the release zip.
+
+Uninstall: `claude plugin uninstall slack-local@lts-slack-local-mcp` and
+`claude plugin marketplace remove lts-slack-local-mcp` (or `claude mcp remove slack`).
+Call `logout` first: that is what deletes the browser profile that holds your Slack
+session. Uninstalling alone leaves it on disk (default
+`%LOCALAPPDATA%\lts-slack-local-mcp`, or `~/.local/share/lts-slack-local-mcp` on
+macOS/Linux).
+
+From source (Go; `go.mod` names the toolchain):
 
 ```bash
-go build -o slack-mcp ./cmd/slack-mcp-server
+go build -o slack-mcp ./cmd/slack-mcp-server   # slack-mcp.exe on Windows
 claude mcp add --scope user slack -- /path/to/slack-mcp
 ```
+
+Environment variables for the plugin install are read from the environment Claude Code is
+started in (or set them with `claude mcp add -e NAME=value` in `mcp` mode).
 
 ## Read-only by default
 
@@ -102,7 +127,13 @@ Channel lists match canonical conversation IDs only (`C…`, `D…`, `G…`).
 | `SLACK_LOCAL_ALLOWED_TEAM_IDS` | Restrict accepted workspaces |
 | `SLACK_MCP_XOXC_TOKEN` + `SLACK_MCP_XOXD_TOKEN`, or `SLACK_MCP_XOXP_TOKEN` | Optional static credential instead of the browser profile |
 | `SLACK_MCP_PROXY`, `SLACK_MCP_SERVER_CA`, `SLACK_MCP_USER_AGENT` | Proxy, extra trusted CA, user agent |
-| `SLACK_MCP_LOG_LEVEL` | `debug`, `info`, `warn`, `error` (logs go to stderr; stdout is the MCP stream) |
+| `SLACK_MCP_LOG_LEVEL`, `SLACK_MCP_LOG_FORMAT`, `SLACK_MCP_LOG_COLOR` | Logging (to stderr; stdout is the MCP stream). Tool argument values are never logged |
+| `SLACK_LOCAL_WORKSPACE_URL` | Page the sign-in browser opens (default `https://app.slack.com/client`) |
+| `SLACK_MCP_XOXB_TOKEN` | Static bot token alternative (no browser) |
+| `SLACK_MCP_CACHE_TTL`, `SLACK_MCP_MIN_REFRESH_INTERVAL` | User/channel cache lifetime and forced-refresh throttle |
+| `SLACK_MCP_ADD_MESSAGE_UNFURLING`, `SLACK_MCP_ADD_MESSAGE_MARK` | Link unfurling and mark-as-read after posting (the latter also needs `SLACK_MCP_MARK_TOOL`) |
+
+Flags: `-e/--enabled-tools` (same as `SLACK_MCP_ENABLED_TOOLS`) and `--no-cache`.
 
 Removed from upstream: HTTP/SSE transports and API key, Docker/compose files, the embedded
 HTTP Toolkit CA, the insecure-TLS switch, TLS fingerprint impersonation, the demo mode,

@@ -32,8 +32,8 @@ if [ -z "$zip" ]; then
   echo "Downloading $name ..."
   curl -fsSL "$base/$name" -o "$zip"
   curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
-  sha="$(grep -E "[[:space:]]$name\$" "$tmp/SHA256SUMS" | head -1 | cut -d' ' -f1)"
-  [ -n "$sha" ] || { echo "$name is not listed in SHA256SUMS" >&2; exit 1; }
+  sha="$(awk -v n="$name" '$2 == n { print $1; exit }' "$tmp/SHA256SUMS")"
+  [[ "$sha" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "SHA256SUMS has no valid hash for $name" >&2; exit 1; }
 elif [ -z "$sha" ] && [ "$skip" != 1 ]; then
   echo "pass --sha256 HASH to verify the local zip, or --skip-checksum to install it unverified" >&2; exit 2
 fi
@@ -44,6 +44,7 @@ if [ -n "$sha" ]; then
 else
   echo "WARNING: installing without checksum verification" >&2
 fi
+[ -z "$version" ] || [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected version '$version'" >&2; exit 1; }
 if unzip -Z1 "$zip" | grep -E '(^|/)\.\.(/|$)|^/' >/dev/null; then echo "unsafe path in archive" >&2; exit 1; fi
 dest="${XDG_DATA_HOME:-$HOME/.local/share}/lts-slack-local-mcp/install/${version:-local}"
 rm -rf "$dest"; mkdir -p "$dest"; unzip -q "$zip" -d "$dest"
@@ -53,10 +54,18 @@ chmod +x "$exe"
 if ! command -v claude >/dev/null; then
   echo "Claude Code CLI not found. Add this MCP server manually: command: $exe"; exit 0
 fi
+# Re-running replaces a previous install instead of failing on "already exists".
+if [ "$mode" = plugin ]; then
+  claude plugin uninstall "slack-local@lts-slack-local-mcp" >/dev/null 2>&1 || true
+  claude plugin marketplace remove "lts-slack-local-mcp" >/dev/null 2>&1 || true
+else
+  claude mcp remove --scope user slack >/dev/null 2>&1 || true
+fi
 if [ "$mode" = plugin ]; then
   claude plugin marketplace add "$dest"
   claude plugin install "slack-local@lts-slack-local-mcp"
 else
   claude mcp add --scope user slack -- "$exe"
 fi
+for old in "$(dirname "$dest")"/*/; do [ "${old%/}" = "$dest" ] || rm -rf "$old" || true; done
 echo "Done. Restart Claude Code, then ask it to call the Slack 'login' tool (a browser window opens once for sign-in)."

@@ -45,7 +45,8 @@ try {
         Invoke-WebRequest "$base/SHA256SUMS" -OutFile (Join-Path $tmp "SHA256SUMS")
         $line = Get-Content (Join-Path $tmp "SHA256SUMS") | Where-Object { $_ -match ("\s" + [regex]::Escape($name) + "$") } | Select-Object -First 1
         if (-not $line) { throw "$name is not listed in SHA256SUMS" }
-        $Sha256 = ($line -split "\s+")[0]
+        $Sha256 = ($line.Trim() -split "\s+")[0]
+        if ($Sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw "SHA256SUMS has no valid hash for $name" }
     } elseif (-not $Sha256 -and -not $SkipChecksum) {
         throw "Pass -Sha256 <hash> to verify the local zip, or -SkipChecksum to install it unverified."
     }
@@ -68,6 +69,7 @@ try {
         }
     } finally { $z.Dispose() }
 
+    if ($Version -and $Version -notmatch '^\d+\.\d+\.\d+$') { throw "Unexpected version '$Version'" }
     $label = if ($Version) { $Version } else { "local" }
     $dest = Join-Path $env:LOCALAPPDATA "lts-slack-local-mcp\install\$label"
     if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
@@ -81,6 +83,15 @@ try {
         Write-Host "  command: $exe"
         exit 0
     }
+    # Re-running replaces a previous install instead of failing on "already exists".
+    $ErrorActionPreference = "Continue"
+    if ($Mode -eq "plugin") {
+        & claude plugin uninstall "slack-local@lts-slack-local-mcp" 2>&1 | Out-Null
+        & claude plugin marketplace remove "lts-slack-local-mcp" 2>&1 | Out-Null
+    } else {
+        & claude mcp remove --scope user slack 2>&1 | Out-Null
+    }
+    $ErrorActionPreference = "Stop"
     if ($Mode -eq "plugin") {
         & claude plugin marketplace add $dest
         if ($LASTEXITCODE -ne 0) { throw "claude plugin marketplace add failed" }
@@ -90,6 +101,9 @@ try {
         & claude mcp add --scope user slack -- $exe
         if ($LASTEXITCODE -ne 0) { throw "claude mcp add failed" }
     }
+    # Drop older unpacked versions (best effort: a running binary can be locked).
+    Get-ChildItem (Split-Path $dest) -Directory -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $dest } |
+        ForEach-Object { try { Remove-Item -Recurse -Force $_.FullName -ErrorAction Stop } catch { Write-Warning "Could not remove old install $($_.Name)" } }
     Write-Host "Done. Restart Claude Code, then ask it to call the Slack 'login' tool (a browser window opens once for sign-in)."
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

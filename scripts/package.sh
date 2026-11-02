@@ -9,6 +9,11 @@ arch="${2:?arch: amd64|arm64}"
 case "$os" in windows|linux|darwin) ;; *) echo "bad os" >&2; exit 2;; esac
 case "$arch" in amd64|arm64) ;; *) echo "bad arch" >&2; exit 2;; esac
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# Refuse to package a tree that differs from a commit: the binary and checksum must
+# be traceable to exact source. Set ALLOW_DIRTY=1 only for local experiments.
+if [ "${ALLOW_DIRTY:-0}" != 1 ] && [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then
+  echo "working tree is not clean; commit or stash first (ALLOW_DIRTY=1 to override for local tests)" >&2; exit 1
+fi
 version="$(tr -d '[:space:]' < "$root/VERSION")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "VERSION must be MAJOR.MINOR.PATCH" >&2; exit 2; }
 ext=""; [ "$os" = windows ] && ext=".exe"
@@ -19,7 +24,8 @@ mkdir -p "$staging/plugin/bin" "$staging/.claude-plugin"
 cp "$root/.claude-plugin/marketplace.json" "$staging/.claude-plugin/"
 cp -R "$root/plugin/.claude-plugin" "$staging/plugin/.claude-plugin"
 cp -R "$root/plugin/skills" "$staging/plugin/skills"
-for f in LICENSE NOTICE README.md SECURITY.md; do cp "$root/$f" "$staging/"; done
+for f in LICENSE NOTICE THIRD_PARTY_LICENSES.md README.md SECURITY.md; do cp "$root/$f" "$staging/"; done
+for f in LICENSE NOTICE THIRD_PARTY_LICENSES.md; do cp "$root/$f" "$staging/plugin/"; done  # the plugin folder is what gets installed
 sed -E "s/\"version\": *\"[^\"]*\"/\"version\": \"$version\"/" "$root/plugin/.claude-plugin/plugin.json" > "$staging/plugin/.claude-plugin/plugin.json"
 printf '{\n  "mcpServers": {\n    "slack": {\n      "command": "${CLAUDE_PLUGIN_ROOT}/bin/slack-mcp%s"\n    }\n  }\n}\n' "$ext" > "$staging/plugin/.mcp.json"
 commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)"

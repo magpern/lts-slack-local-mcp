@@ -2,6 +2,8 @@ module github.com/magpern/lts-slack-local-mcp
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/go-rod/rod v0.116.2
 	github.com/gocarina/gocsv v0.0.0-20261101205459-d0dd027dcbfa

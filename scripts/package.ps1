@@ -8,12 +8,18 @@
   The version comes from the VERSION file and is stamped into the binary and the
   plugin manifest.
 #>
+#Requires -Version 7
 param(
     [ValidateSet("windows", "linux", "darwin")] [string] $Os = "windows",
     [ValidateSet("amd64", "arm64")] [string] $Arch = "amd64"
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+# Refuse to package a tree that differs from a commit: the binary and checksum must
+# be traceable to exact source. Set ALLOW_DIRTY=1 only for local experiments.
+if ($env:ALLOW_DIRTY -ne "1" -and (& git -C $root status --porcelain)) {
+    throw "working tree is not clean; commit or stash first (ALLOW_DIRTY=1 to override for local tests)"
+}
 $version = (Get-Content (Join-Path $root "VERSION") -Raw).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must be MAJOR.MINOR.PATCH, got '$version'" }
 $ext = if ($Os -eq "windows") { ".exe" } else { "" }
@@ -27,7 +33,8 @@ try {
     Copy-Item (Join-Path $root ".claude-plugin\marketplace.json") (Join-Path $staging ".claude-plugin\")
     Copy-Item (Join-Path $root "plugin\.claude-plugin") (Join-Path $plugin ".claude-plugin") -Recurse
     Copy-Item (Join-Path $root "plugin\skills") (Join-Path $plugin "skills") -Recurse
-    foreach ($f in "LICENSE", "NOTICE", "README.md", "SECURITY.md") { Copy-Item (Join-Path $root $f) $staging }
+    foreach ($f in "LICENSE", "NOTICE", "THIRD_PARTY_LICENSES.md", "README.md", "SECURITY.md") { Copy-Item (Join-Path $root $f) $staging }
+    foreach ($f in "LICENSE", "NOTICE", "THIRD_PARTY_LICENSES.md") { Copy-Item (Join-Path $root $f) $plugin }  # the plugin folder is what gets installed
 
     # single-source the version
     $pj = Join-Path $plugin ".claude-plugin\plugin.json"
@@ -42,12 +49,16 @@ try {
     $commit = (& git -C $root rev-parse HEAD 2>$null)
     if (-not $commit) { $commit = "unknown" }
     $mod = (& go -C $root list -m)
+    if ($LASTEXITCODE -ne 0 -or -not $mod) { throw "go list -m failed" }
     $ld = "-s -w -X '$mod/pkg/version.Version=$version' -X '$mod/pkg/version.CommitHash=$commit' -X '$mod/pkg/version.BuildTime=$([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))' -X '$mod/pkg/version.BinaryName=slack-mcp'"
+    $saved = @{ GOOS = $env:GOOS; GOARCH = $env:GOARCH; CGO_ENABLED = $env:CGO_ENABLED }
     $env:GOOS = $Os; $env:GOARCH = $Arch; $env:CGO_ENABLED = "0"
     try {
         & go -C $root build -trimpath -ldflags $ld -o (Join-Path $plugin "bin\slack-mcp$ext") ./cmd/slack-mcp-server
         if ($LASTEXITCODE -ne 0) { throw "go build failed" }
-    } finally { Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue }
+    } finally {
+        foreach ($k in $saved.Keys) { if ($null -eq $saved[$k]) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue } else { Set-Item "Env:$k" $saved[$k] } }
+    }
 
     $zip = Join-Path $dist "$name.zip"
     if (Test-Path $zip) { Remove-Item $zip }
