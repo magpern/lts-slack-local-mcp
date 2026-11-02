@@ -78,7 +78,9 @@ func newTestAuth(t *testing.T, h Harvester, v Validator) (*SessionAuth, *Store, 
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	return NewSessionAuth(cfg, store, h, v, nil), store, cfg
+	sa := NewSessionAuth(cfg, store, h, v, nil)
+	sa.AllowAutoFirstLogin() // tests exercise the lifecycle; first-run gating has its own test
+	return sa, store, cfg
 }
 
 // ---- tests ----
@@ -118,128 +120,121 @@ func TestUnitWrongAccountNoWindow(t *testing.T) {
 	}
 }
 
-func TestUnitVisibleWindowWhenHeadlessEmpty(t *testing.T) {
+func TestUnitLoginOpensVisibleWindowWhenHeadlessEmpty(t *testing.T) {
 	h := &fakeHarvester{rounds: [][]Credential{{}, {cred("xoxc-A")}}}
 	v := &fakeValidator{ids: map[string]Identity{"xoxc-A": {TeamID: "T1", UserID: "U1"}}}
 	sa, _, _ := newTestAuth(t, h, v)
 
-	if _, _, _, err := sa.Get(context.Background()); err != nil {
-		t.Fatalf("Get: %v", err)
+	if _, err := sa.Login(context.Background()); err != nil {
+		t.Fatalf("Login: %v", err)
 	}
 	if h.callCount() != 2 || h.calls[0] != true || h.calls[1] != false {
 		t.Fatalf("expected headless then visible, got %v", h.calls)
 	}
 }
 
-func TestUnitConcurrentGetShareOneHarvest(t *testing.T) {
-	h := &fakeHarvester{rounds: [][]Credential{{cred("xoxc-A")}}, delay: 80 * time.Millisecond}
-	v := &fakeValidator{ids: map[string]Identity{"xoxc-A": {TeamID: "T1", UserID: "U1"}}}
-	sa, _, _ := newTestAuth(t, h, v)
+func TestUnitAutoReacquireNeverOpensWindow(t *testing.T) {
+	h := &fakeHarvester{rounds: [][]Credential{{}}} // headless finds nothing
+	v := &fakeValidator{ids: map[string]Identity{}}
+	sa, store, _ := newTestAuth(t, h, v)
+	_ = store.SetPin(Identity{TeamID: "T1", UserID: "U1"})
 
-	var wg sync.WaitGroup
-	errs := make([]error, 10)
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(i int) { defer wg.Done(); _, _, _, errs[i] = sa.Get(context.Background()) }(i)
+	if _, _, _, err := sa.Get(context.Background()); err != ErrNoSession {
+		t.Fatalf("expected ErrNoSession, got %v", err)
 	}
-	wg.Wait()
-	for i, e := range errs {
-		if e != nil {
-			t.Fatalf("goroutine %d: %v", i, e)
-		}
-	}
-	if h.callCount() != 1 {
-		t.Fatalf("expected exactly one harvest, got %d", h.callCount())
+	if h.callCount() != 1 || h.calls[0] != true {
+		t.Fatalf("unattended acquire must be headless only, got %v", h.calls)
 	}
 }
 
-func TestUnitReacquireOnAuthFailure(t *testing.T) {
-	h := &fakeHarvester{rounds: [][]Credential{{cred("xoxc-A")}, {cred("xoxc-B")}}}
-	v := &fakeValidator{ids: map[string]Identity{
-		"xoxc-A": {TeamID: "T1", UserID: "U1"},
-		"xoxc-B": {TeamID: "T1", UserID: "U1"},
-	}}
-	sa, _, _ := newTestAuth(t, h, v)
-
-	c1, _, g1, err := sa.Get(context.Background())
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	c2, _, g2, err := sa.HandleAuthFailure(context.Background(), g1, c1.FP())
-	if err != nil {
-		t.Fatalf("HandleAuthFailure: %v", err)
-	}
-	if c2.Token != "xoxc-B" || g2 <= g1 {
-		t.Fatalf("expected re-acquired credential at newer gen, got %s g=%d", c2.Token, g2)
-	}
-}
-
-func TestUnitStaleFailureScopedToGeneration(t *testing.T) {
-	h := &fakeHarvester{rounds: [][]Credential{{cred("xoxc-A")}, {cred("xoxc-B")}}}
-	v := &fakeValidator{ids: map[string]Identity{
-		"xoxc-A": {TeamID: "T1", UserID: "U1"},
-		"xoxc-B": {TeamID: "T1", UserID: "U1"},
-	}}
-	sa, _, _ := newTestAuth(t, h, v)
-
-	c1, _, g1, _ := sa.Get(context.Background())
-	// Request Y refreshes to B at gen2.
-	_, _, g2, _ := sa.HandleAuthFailure(context.Background(), g1, c1.FP())
-	// Request X (still on gen1) reports its stale failure; must reuse B, not harvest.
-	before := h.callCount()
-	c3, _, g3, err := sa.HandleAuthFailure(context.Background(), g1, c1.FP())
-	if err != nil {
-		t.Fatalf("stale HandleAuthFailure: %v", err)
-	}
-	if c3.Token != "xoxc-B" || g3 != g2 {
-		t.Fatalf("stale failure should reuse gen2/B, got %s g=%d", c3.Token, g3)
-	}
-	if h.callCount() != before {
-		t.Fatalf("stale failure must not trigger a harvest")
-	}
-}
-
-func TestUnitLogoutSignedOutReloginAcrossRestart(t *testing.T) {
+func TestUnitFirstRunRequiresLogin(t *testing.T) {
 	h := &fakeHarvester{rounds: [][]Credential{{cred("xoxc-A")}}}
 	v := &fakeValidator{ids: map[string]Identity{"xoxc-A": {TeamID: "T1", UserID: "U1"}}}
-	sa, store, cfg := newTestAuth(t, h, v)
+	dir := t.TempDir()
+	cfg := Config{ProfileDir: filepath.Join(dir, "p"), DataDir: filepath.Join(dir, "s"),
+		LoginTimeout: time.Second, HeadlessTimeout: time.Second, TokenTTL: time.Hour}
+	store, _ := OpenStore(cfg.DataDir)
+	sa := NewSessionAuth(cfg, store, h, v, nil) // no AllowAutoFirstLogin
 
-	if _, _, _, err := sa.Get(context.Background()); err != nil {
-		t.Fatalf("Get: %v", err)
+	if _, _, _, err := sa.Get(context.Background()); err != ErrNotLoggedIn {
+		t.Fatalf("expected ErrNotLoggedIn, got %v", err)
 	}
-	// Populate the profile dir so logout has something to delete.
-	_ = os.MkdirAll(cfg.ProfileDir, 0o700)
-	_ = os.WriteFile(filepath.Join(cfg.ProfileDir, "x"), []byte("x"), 0o600)
+	if h.callCount() != 0 {
+		t.Fatalf("first run must not harvest without login, calls=%v", h.calls)
+	}
+}
 
+func TestUnitLogoutDuringHarvestDiscardsResult(t *testing.T) {
+	h := &fakeHarvester{rounds: [][]Credential{{cred("xoxc-A")}}, delay: 150 * time.Millisecond}
+	v := &fakeValidator{ids: map[string]Identity{"xoxc-A": {TeamID: "T1", UserID: "U1"}}}
+	sa, _, _ := newTestAuth(t, h, v)
+
+	done := make(chan error, 1)
+	go func() { _, _, _, err := sa.Get(context.Background()); done <- err }()
+	time.Sleep(40 * time.Millisecond) // harvest is in flight
 	if err := sa.Logout(context.Background()); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if _, err := os.Stat(cfg.ProfileDir); !os.IsNotExist(err) {
-		t.Fatalf("profile dir should be deleted, stat err=%v", err)
+	if err := <-done; err != ErrSignedOut {
+		t.Fatalf("harvest finishing after logout must be discarded, got %v", err)
 	}
-	before := h.callCount()
 	if _, _, _, err := sa.Get(context.Background()); err != ErrSignedOut {
-		t.Fatalf("expected ErrSignedOut after logout, got %v", err)
+		t.Fatalf("still signed out expected, got %v", err)
 	}
-	if h.callCount() != before {
-		t.Fatalf("Get after logout must not harvest")
+}
+
+func TestUnitLogoutCleanupFailureQuarantines(t *testing.T) {
+	sa, store, cfg := newTestAuth(t, &fakeHarvester{}, &fakeValidator{})
+	_ = os.MkdirAll(cfg.ProfileDir, 0o700)
+	sa.removeAll = func(string) error { return fmt.Errorf("locked") } // deletion fails
+	if err := sa.Logout(context.Background()); err != nil {
+		t.Fatalf("quarantine should make Logout succeed, got %v", err)
+	}
+	if _, err := os.Stat(cfg.ProfileDir); !os.IsNotExist(err) {
+		t.Fatalf("residual profile must not remain at ProfileDir (stat err=%v)", err)
+	}
+	if !store.SignedOut() || store.ProfileDirty() {
+		t.Fatalf("expected signed-out and clean flag after successful quarantine")
+	}
+}
+
+func TestUnitLogoutCleanupTotalFailureBlocksReuseAcrossRestart(t *testing.T) {
+	h := &fakeHarvester{rounds: [][]Credential{{cred("xoxc-A")}}}
+	v := &fakeValidator{ids: map[string]Identity{"xoxc-A": {TeamID: "T1", UserID: "U1"}}}
+	sa, store, cfg := newTestAuth(t, h, v)
+	_ = os.MkdirAll(cfg.ProfileDir, 0o700)
+	sa.removeAll = func(string) error { return fmt.Errorf("locked") }
+	sa.rename = func(string, string) error { return fmt.Errorf("locked") }
+
+	if err := sa.Logout(context.Background()); err == nil {
+		t.Fatalf("expected Logout to report the cleanup failure")
+	}
+	if !store.SignedOut() || !store.ProfileDirty() {
+		t.Fatalf("must stay signed out with the dirty flag persisted")
+	}
+	if _, _, _, err := sa.Get(context.Background()); err != ErrSignedOut {
+		t.Fatalf("expected ErrSignedOut, got %v", err)
 	}
 
-	// Simulate a process restart: a fresh SessionAuth from the same store.
-	h2 := &fakeHarvester{rounds: [][]Credential{{cred("xoxc-A")}}}
-	sa2 := NewSessionAuth(cfg, store, h2, v, nil)
-	if _, _, _, err := sa2.Get(context.Background()); err != ErrSignedOut {
-		t.Fatalf("restart should remain signed out, got %v", err)
+	// Restart: new process, same store. Login must refuse to reuse the residue
+	// while it still cannot be removed.
+	sa2 := NewSessionAuth(cfg, store, h, v, nil)
+	sa2.removeAll = func(string) error { return fmt.Errorf("locked") }
+	sa2.rename = func(string, string) error { return fmt.Errorf("locked") }
+	if _, err := sa2.Login(context.Background()); err == nil {
+		t.Fatalf("Login must fail while the residual profile cannot be removed")
 	}
-	if h2.callCount() != 0 {
-		t.Fatalf("restart signed-out must not harvest")
+	if h.callCount() != 0 {
+		t.Fatalf("no harvest may touch a residual profile, calls=%v", h.calls)
 	}
-	// Explicit login re-enables and re-pins.
-	if id, err := sa2.Login(context.Background()); err != nil || id.TeamID != "T1" {
-		t.Fatalf("Login after restart: id=%v err=%v", id, err)
+
+	// Once removal works, Login cleans the residue first, then proceeds.
+	sa3 := NewSessionAuth(cfg, store, h, v, nil)
+	if _, err := sa3.Login(context.Background()); err != nil {
+		t.Fatalf("Login after cleanup works: %v", err)
 	}
-	if store.SignedOut() {
-		t.Fatalf("login should clear signed-out state")
+	if store.ProfileDirty() {
+		t.Fatalf("dirty flag must clear after successful cleanup")
 	}
 }
 

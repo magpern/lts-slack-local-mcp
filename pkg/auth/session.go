@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -44,6 +45,10 @@ type SessionAuth struct {
 	log   *zap.Logger
 	clock func() time.Time
 
+	// Filesystem hooks, replaceable in tests to inject cleanup failures.
+	removeAll func(string) error
+	rename    func(oldpath, newpath string) error
+
 	mu         sync.Mutex
 	cond       *sync.Cond
 	harvesting bool
@@ -51,6 +56,10 @@ type SessionAuth struct {
 	cur        *candidate
 	rejected   map[string]bool
 	suspended  bool
+
+	// autoFirst allows an unattended first acquisition with no pinned identity.
+	// Used only with a static (environment-supplied) credential source.
+	autoFirst bool
 }
 
 // NewSessionAuth builds the lifecycle, loading persisted signed-out state.
@@ -61,11 +70,22 @@ func NewSessionAuth(cfg Config, store *Store, harv Harvester, val Validator, log
 	s := &SessionAuth{
 		cfg: cfg, store: store, harv: harv, val: val, log: log,
 		clock:     time.Now,
+		removeAll: os.RemoveAll,
+		rename:    os.Rename,
 		rejected:  map[string]bool{},
 		suspended: store.SignedOut(),
 	}
 	s.cond = sync.NewCond(&s.mu)
 	return s
+}
+
+// AllowAutoFirstLogin lets Get acquire a first credential without a pinned
+// identity and without an explicit Login. It is intended for static credential
+// sources (environment variables); browser harvesting stays opt-in via Login.
+func (s *SessionAuth) AllowAutoFirstLogin() {
+	s.mu.Lock()
+	s.autoFirst = true
+	s.mu.Unlock()
 }
 
 // Generation returns the current credential generation.
@@ -84,7 +104,7 @@ func (s *SessionAuth) validLocked() bool {
 
 // Get returns a usable credential, acquiring one if necessary.
 func (s *SessionAuth) Get(ctx context.Context) (Credential, Identity, uint64, error) {
-	return s.acquire(ctx, false)
+	return s.acquire(ctx, modeAuto)
 }
 
 // HandleAuthFailure is called when Slack rejects the credential at failedGen. It
@@ -105,19 +125,25 @@ func (s *SessionAuth) HandleAuthFailure(ctx context.Context, failedGen uint64, f
 		return c, id, g, nil
 	}
 	s.mu.Unlock()
-	return s.acquire(ctx, false)
+	return s.acquire(ctx, modeAuto)
 }
 
 // Login forces a fresh acquisition and re-pins whatever allowed account is
 // signed in, re-enabling auto-login. It authorizes switching accounts.
 func (s *SessionAuth) Login(ctx context.Context) (*Identity, error) {
+	// A profile left behind by a failed logout must never be reused.
+	if s.store.ProfileDirty() {
+		if err := s.deleteProfile(); err != nil {
+			return nil, fmt.Errorf("a previous logout could not remove the browser profile; close any browser using it and call login again: %w", err)
+		}
+	}
 	s.mu.Lock()
 	s.suspended = false
 	s.cur = nil
 	s.rejected = map[string]bool{}
 	_ = s.store.ClearSignedOut()
 	s.mu.Unlock()
-	_, id, _, err := s.acquire(ctx, true)
+	_, id, _, err := s.acquire(ctx, modeLogin)
 	if err != nil {
 		return nil, err
 	}
@@ -139,26 +165,42 @@ func (s *SessionAuth) Logout(ctx context.Context) error {
 	return s.deleteProfile()
 }
 
+// deleteProfile removes the dedicated profile. The dirty flag is persisted
+// first and cleared only on success, so a failure leaves a durable marker that
+// blocks reuse. If removal fails, the profile is quarantined (renamed); a
+// quarantined profile is no longer at ProfileDir, so it cannot be reused.
 func (s *SessionAuth) deleteProfile() error {
 	dir := s.cfg.ProfileDir
 	if dir == "" {
 		return nil
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	_ = s.store.SetProfileDirty(true)
+	if err := s.removeAll(dir); err != nil {
 		q := dir + ".quarantined-" + s.clock().Format("20060102T150405")
-		if rerr := os.Rename(dir, q); rerr != nil {
+		if rerr := s.rename(dir, q); rerr != nil {
 			s.log.Warn("profile deletion and quarantine both failed", zap.Error(err))
-			return err
+			return err // dirty flag stays set
 		}
 		s.log.Warn("profile deletion failed; quarantined residual profile")
 	}
+	_ = s.store.SetProfileDirty(false)
 	return nil
 }
 
+type acquireMode int
+
+const (
+	// modeAuto is an unattended re-acquire: headless only, persisted pin must match.
+	modeAuto acquireMode = iota
+	// modeLogin is explicit: headless first, then a visible window, any allowed
+	// account is accepted and re-pinned.
+	modeLogin
+)
+
 // acquire obtains a credential. Only one harvest runs at a time; concurrent
-// callers wait on the cond and reuse the result. allowSwitch accepts any
-// allowed account and re-pins it; otherwise the persisted pin must match.
-func (s *SessionAuth) acquire(ctx context.Context, allowSwitch bool) (Credential, Identity, uint64, error) {
+// callers wait on the cond and reuse the result.
+func (s *SessionAuth) acquire(ctx context.Context, mode acquireMode) (Credential, Identity, uint64, error) {
+	allowSwitch := mode == modeLogin
 	s.mu.Lock()
 	for {
 		if s.suspended {
@@ -177,18 +219,24 @@ func (s *SessionAuth) acquire(ctx context.Context, allowSwitch bool) (Credential
 		break
 	}
 	// We are the harvester. Snapshot state, then release the lock for the slow part.
-	s.harvesting = true
 	var pin *Identity
 	if !allowSwitch {
 		pin = s.store.Pin()
+		if pin == nil && !s.autoFirst {
+			// First run: never open a window or block a tool call on an
+			// unattended sign-in. The user must call login explicitly.
+			s.mu.Unlock()
+			return Credential{}, Identity{}, 0, ErrNotLoggedIn
+		}
 	}
+	s.harvesting = true
 	rejected := make(map[string]bool, len(s.rejected))
 	for k := range s.rejected {
 		rejected[k] = true
 	}
 	s.mu.Unlock()
 
-	accepted, refusals := s.runHarvest(ctx, pin, rejected)
+	accepted, refusals := s.runHarvest(ctx, pin, rejected, allowSwitch)
 
 	s.mu.Lock()
 	s.harvesting = false
@@ -215,10 +263,10 @@ func (s *SessionAuth) acquire(ctx context.Context, allowSwitch bool) (Credential
 	return accepted.cred, accepted.id, g, nil
 }
 
-// runHarvest performs the two-step harvest without holding the mutex: headless
-// first, then a visible window only if nothing valid was found and no account
-// was explicitly refused.
-func (s *SessionAuth) runHarvest(ctx context.Context, pin *Identity, rejected map[string]bool) (*candidate, map[string]bool) {
+// runHarvest performs the harvest without holding the mutex: headless first,
+// then (only when interactive, i.e. an explicit login) a visible window if
+// nothing valid was found and no account was explicitly refused.
+func (s *SessionAuth) runHarvest(ctx context.Context, pin *Identity, rejected map[string]bool, interactive bool) (*candidate, map[string]bool) {
 	var accepted *candidate
 	refusals := map[string]bool{}
 
@@ -243,7 +291,7 @@ func (s *SessionAuth) runHarvest(ctx context.Context, pin *Identity, rejected ma
 	}
 
 	_, _ = s.harv.Harvest(ctx, true, s.cfg.HeadlessTimeout, accept)
-	if accepted == nil && len(refusals) == 0 {
+	if interactive && accepted == nil && len(refusals) == 0 {
 		_, _ = s.harv.Harvest(ctx, false, s.cfg.LoginTimeout, accept)
 	}
 	return accepted, refusals

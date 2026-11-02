@@ -91,6 +91,8 @@ var (
 	ErrSignedOut = errors.New("signed out. Call the login tool to sign in again")
 	// ErrIdentityChanged means the browser is signed in to a different account.
 	ErrIdentityChanged = errors.New("the browser is signed in to a different Slack account than this session selected. Call the login tool to select the account again")
+	// ErrNotLoggedIn means no account has been linked yet; login must be called.
+	ErrNotLoggedIn = errors.New("not signed in to Slack yet. Call the login tool and complete sign-in in the browser window")
 	// ErrNoSession means no usable session could be acquired.
 	ErrNoSession = errors.New("could not obtain a Slack session. Call the login tool and complete sign-in in the browser window")
 	// ErrNotAllowed means the account is outside the configured team allow-list.

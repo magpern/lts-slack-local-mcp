@@ -11,6 +11,9 @@ import (
 type persisted struct {
 	Pin       *Identity `json:"pin,omitempty"`
 	SignedOut bool      `json:"signed_out"`
+	// ProfileDirty is set while a logout is deleting the browser profile and
+	// stays set if deletion fails, so a residual profile is never reused.
+	ProfileDirty bool `json:"profile_dirty,omitempty"`
 }
 
 // Store persists the identity pin and the signed-out flag across restarts.
@@ -50,6 +53,21 @@ func (s *Store) SignedOut() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.st.SignedOut
+}
+
+// ProfileDirty reports whether a previous logout left a profile undeleted.
+func (s *Store) ProfileDirty() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.ProfileDirty
+}
+
+// SetProfileDirty persists the residual-profile flag.
+func (s *Store) SetProfileDirty(dirty bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.ProfileDirty = dirty
+	return s.flushLocked()
 }
 
 // SetPin persists a new identity pin and clears the signed-out flag.
