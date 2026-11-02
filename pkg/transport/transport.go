@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -22,26 +23,27 @@ import (
 )
 
 const defaultUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-const toolkitPEM = `-----BEGIN CERTIFICATE-----
-MIIDTzCCAjegAwIBAgIRCvyMzxdGWElNljTLqOyz44owDQYJKoZIhvcNAQELBQAw
-QTEYMBYGA1UEAxMPSFRUUCBUb29sa2l0IENBMQswCQYDVQQGEwJYWDEYMBYGA1UE
-ChMPSFRUUCBUb29sa2l0IENBMB4XDTI1MDMxMjE3NTU0M1oXDTI2MDMxMzE3NTU0
-M1owQTEYMBYGA1UEAxMPSFRUUCBUb29sa2l0IENBMQswCQYDVQQGEwJYWDEYMBYG
-A1UEChMPSFRUUCBUb29sa2l0IENBMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
-CgKCAQEArHe2mgAdlajHtNHHjCnUb7+UwsvYZ0AGPgpZT9hwAauqIa1BwH6bo4uY
-Zv4DnEKWVOt4wwVGNWtc5PyFAcO5lB9s9jRZYS/BIZALGrhti5YDw/IFNKFpiyeb
-buG18qlZz6f6+nEFd/QICl9S333hA89Pks6PUbYsbmSNmS7Dz5fxZN5QH9PoA7pa
-uDyJBhwJ0uB4UnkcC5tVVuH6vSd9mhtqur4cgo2Rfzz3TBMRDrrJIEVcR2tA3mPj
-9cTMgvfxZ+2Cgzin1FVkYJNsuL/HzoAzL8HXM6eKM/fn9cEWJKICIDR/cbrwl/RD
-6rtMWUS7Vo39Wq+OFx1Szn+8gIZUjwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/
-MA4GA1UdDwEB/wQEAwIBxjAdBgNVHQ4EFgQUwGDLxZ3sJfQRBX23oJj6X1EJJ0Aw
-DQYJKoZIhvcNAQELBQADggEBAAMcrGqFxWK3tM/eoVcchknYYQOyOQUjhWe1wfPo
-Gz51GRNcKD5Ip3ItR0bah2MYwHapGOKj0rvuHbpOZl+IJM2CRSx6IMisOds0LI70
-Qmz94je6GG2F3wxlF5P6BxKHuM6rCCqG1sgElnP59UomUejjWYkOXQd3xPIyJMuE
-qyKSCrGs0GOnDRwH6a//zLQF3KOFiN2jJj6oHijaIQfmE6Rgi+x8hGIX6J8adn0X
-g6ZwdV3myNqKQVJiV+6HSIO1y8tLOnBXjF751L56+fxQoP9Lh9wB0edq730mcb6y
-0GhBUL73wXOL2ymHsqrUhSpmScf+YnnX9GN29520s5LFTpY=
------END CERTIFICATE-----`
+
+// IsSlackURL reports whether rawURL is an HTTPS URL on a Slack-owned domain.
+func IsSlackURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	return err == nil && allowedHost(u)
+}
+
+// allowedHost reports whether u is an HTTPS URL on a Slack-owned domain.
+// Replaceable in tests that point the client at a local fake server.
+var allowedHost = func(u *url.URL) bool {
+	if u == nil || u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, d := range []string{"slack.com", "slack-edge.com", "slack-files.com", "slack-gov.com"} {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
 
 // UserAgentTransport wraps another RoundTripper to add User-Agent and cookies
 type UserAgentTransport struct {
@@ -63,6 +65,13 @@ func NewUserAgentTransport(roundTripper http.RoundTripper, userAgent string, coo
 
 // RoundTrip implements the RoundTripper interface
 func (t *UserAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Everything this client sends carries Slack session credentials (the d
+	// cookie, and the token in the body or Authorization header). Refuse any
+	// request, including redirect hops, that is not HTTPS to a Slack host, so a
+	// hostile file URL or redirect cannot receive them.
+	if !allowedHost(req.URL) {
+		return nil, fmt.Errorf("refusing to send a Slack session to a non-Slack or non-HTTPS URL (%s)", req.URL.Hostname())
+	}
 	clonedReq := req.Clone(req.Context())
 	clonedReq.Header.Set("User-Agent", t.userAgent)
 
@@ -356,12 +365,6 @@ func ProvideHTTPClient(cookies []*http.Cookie, logger *zap.Logger) *http.Client 
 		rootCAs = x509.NewCertPool()
 	}
 
-	if isToolkit := os.Getenv("SLACK_MCP_SERVER_CA_TOOLKIT"); isToolkit != "" {
-		if ok := rootCAs.AppendCertsFromPEM([]byte(toolkitPEM)); !ok {
-			logger.Warn("Failed to append toolkit certificate")
-		}
-	}
-
 	if localCertFile := os.Getenv("SLACK_MCP_SERVER_CA"); localCertFile != "" {
 		certs, err := ioutil.ReadFile(localCertFile)
 		if err != nil {
@@ -374,12 +377,12 @@ func ProvideHTTPClient(cookies []*http.Cookie, logger *zap.Logger) *http.Client 
 		}
 	}
 
-	insecure := false
-	if os.Getenv("SLACK_MCP_SERVER_CA_INSECURE") != "" {
-		if localCertFile := os.Getenv("SLACK_MCP_SERVER_CA"); localCertFile != "" {
-			logger.Fatal("SLACK_MCP_SERVER_CA and SLACK_MCP_SERVER_CA_INSECURE cannot be used together")
+	// Disabling certificate verification is not supported: this process holds
+	// session credentials and must never send them over an unverified channel.
+	for _, removed := range []string{"SLACK_MCP_SERVER_CA_INSECURE", "SLACK_MCP_SERVER_CA_TOOLKIT"} {
+		if os.Getenv(removed) != "" {
+			logger.Fatal(removed + " is no longer supported; trust a custom CA with SLACK_MCP_SERVER_CA instead")
 		}
-		insecure = true
 	}
 
 	userAgent := defaultUA
@@ -394,8 +397,7 @@ func ProvideHTTPClient(cookies []*http.Cookie, logger *zap.Logger) *http.Client 
 			zap.String("user_agent", userAgent))
 
 		utlsConfig := &utls.Config{
-			InsecureSkipVerify: insecure,
-			RootCAs:            rootCAs,
+			RootCAs: rootCAs,
 		}
 
 		clientHelloID := detectBrowserFromUserAgent(userAgent)
@@ -425,8 +427,7 @@ func ProvideHTTPClient(cookies []*http.Cookie, logger *zap.Logger) *http.Client 
 		transport = &http.Transport{
 			Proxy: proxy,
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: insecure,
-				RootCAs:            rootCAs,
+				RootCAs: rootCAs,
 			},
 			DialContext: (&net.Dialer{
 				Timeout:   30 * time.Second,
@@ -445,6 +446,15 @@ func ProvideHTTPClient(cookies []*http.Cookie, logger *zap.Logger) *http.Client 
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("stopped after 5 redirects")
+			}
+			if !allowedHost(req.URL) {
+				return fmt.Errorf("refusing redirect to non-Slack or non-HTTPS host %q", req.URL.Hostname())
+			}
+			return nil
+		},
 	}
 
 	return client

@@ -12,7 +12,6 @@ import (
 
 	"github.com/magpern/lts-slack-local-mcp/pkg/auth"
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider/edge"
-	slackauth "github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 )
@@ -86,11 +85,10 @@ func newSessionClient(sess *auth.SessionAuth, log *zap.Logger, onBind func(auth.
 
 // realClient builds the production client, which validates with auth.test.
 func (s *sessionClient) realClient(cred auth.Credential) (*MCPSlackClient, error) {
-	ap, err := slackauth.NewValueAuth(cred.Token, cred.Cookie)
-	if err != nil {
-		return nil, fmt.Errorf("invalid credential: %w", err)
+	if cred.Token == "" || cred.Cookie == "" {
+		return nil, fmt.Errorf("invalid credential: a Slack web session needs both the token and the d cookie")
 	}
-	return NewMCPSlackClient(ap, s.log)
+	return NewMCPSlackClient(cred.Token, cred.Cookies(), s.log)
 }
 
 // connect ensures an inner client exists for the current credential.

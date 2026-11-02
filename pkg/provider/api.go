@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,7 +19,6 @@ import (
 	lauth "github.com/magpern/lts-slack-local-mcp/pkg/auth"
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider/edge"
 	"github.com/magpern/lts-slack-local-mcp/pkg/transport"
-	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -236,7 +236,6 @@ type MCPSlackClient struct {
 	edgeClient  *edge.Client
 
 	authResponse *slack.AuthTestResponse
-	authProvider auth.Provider
 
 	isEnterprise bool
 	isOAuth      bool
@@ -292,14 +291,14 @@ type ApiProvider struct {
 	fetchChannelsMu           sync.Mutex   // serializes fetchAndStoreChannels calls
 }
 
-func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlackClient, error) {
-	httpClient := transport.ProvideHTTPClient(authProvider.Cookies(), logger)
+func NewMCPSlackClient(token string, cookies []*http.Cookie, logger *zap.Logger) (*MCPSlackClient, error) {
+	httpClient := transport.ProvideHTTPClient(cookies, logger)
 
 	slackOpts := []slack.Option{slack.OptionHTTPClient(httpClient)}
 	if os.Getenv("SLACK_MCP_GOVSLACK") == "true" {
 		slackOpts = append(slackOpts, slack.OptionAPIURL("https://slack-gov.com/api/"))
 	}
-	slackClient := slack.New(authProvider.SlackToken(), slackOpts...)
+	slackClient := slack.New(token, slackOpts...)
 
 	authResp, err := slackClient.AuthTest()
 	if err != nil {
@@ -316,12 +315,12 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		BotID:        authResp.BotID,
 	}
 
-	slackClient = slack.New(authProvider.SlackToken(),
+	slackClient = slack.New(token,
 		slack.OptionHTTPClient(httpClient),
 		slack.OptionAPIURL(authResp.URL+"api/"),
 	)
 
-	edgeClient, err := edge.NewWithInfo(authResponse, authProvider,
+	edgeClient, err := edge.NewWithInfo(authResponse, token,
 		edge.OptionHTTPClient(httpClient),
 	)
 	if err != nil {
@@ -329,7 +328,6 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 	}
 
 	isEnterprise := authResp.EnterpriseID != ""
-	token := authProvider.SlackToken()
 
 	// Token type detection
 	// isOAuth: Official OAuth tokens (xoxp or xoxb) - uses Standard API
@@ -342,7 +340,6 @@ func NewMCPSlackClient(authProvider auth.Provider, logger *zap.Logger) (*MCPSlac
 		slackClient:  slackClient,
 		edgeClient:   edgeClient,
 		authResponse: authResponse,
-		authProvider: authProvider,
 		isEnterprise: isEnterprise,
 		isOAuth:      isOAuth,
 		isBotToken:   isBotToken,

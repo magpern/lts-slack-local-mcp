@@ -10,7 +10,6 @@ import (
 	"github.com/gocarina/gocsv"
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider"
 	"github.com/slack-go/slack"
-	"github.com/magpern/lts-slack-local-mcp/pkg/server/auth"
 	"github.com/mark3labs/mcp-go/mcp"
 	"go.uber.org/zap"
 )
@@ -45,12 +44,6 @@ func NewChannelsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *
 
 func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	ch.logger.Debug("ChannelsResource called", zap.Any("params", request.Params))
-
-	// mark3labs/mcp-go does not support middlewares for resources.
-	if authenticated, err := auth.IsAuthenticated(ctx, ch.apiProvider.ServerTransport(), ch.logger); !authenticated {
-		ch.logger.Error("Authentication failed for channels resource", zap.Error(err))
-		return nil, err
-	}
 
 	var channelList []Channel
 

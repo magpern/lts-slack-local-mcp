@@ -19,8 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rusq/slackauth"
-	"github.com/rusq/slackdump/v3/auth"
 	"github.com/rusq/tagops"
 	"github.com/slack-go/slack"
 )
@@ -66,43 +64,14 @@ var (
 
 // getSlackBaseDomain returns the base domain for Slack API endpoints.
 // Returns "slack-gov.com" if SLACK_MCP_GOVSLACK=true, otherwise "slack.com".
+// defaultUserAgent is overridden by the transport with the configured UA.
+const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
 func getSlackBaseDomain() string {
 	if os.Getenv("SLACK_MCP_GOVSLACK") == "true" {
 		return "slack-gov.com"
 	}
 	return "slack.com"
-}
-
-func NewWithClient(workspaceName string, teamID string, token string, cl *http.Client, opt ...Option) (*Client, error) {
-	if teamID == "" {
-		return nil, ErrNoTeamID
-	}
-	if token == "" {
-		return nil, ErrNoToken
-	}
-	tape, err := os.Create("tape.txt")
-	if err != nil {
-		return nil, err
-	}
-	return &Client{
-		cl:           cl,
-		token:        token,
-		teamID:       teamID,
-		webclientAPI: fmt.Sprintf("https://%s.%s/api/", workspaceName, getSlackBaseDomain()),
-		edgeAPI:      fmt.Sprintf("https://edgeapi.%s/cache/%s/", getSlackBaseDomain(), teamID),
-		tape:         tape,
-	}, nil
-}
-
-func NewWithToken(ctx context.Context, token string, cookies []*http.Cookie) (*Client, error) {
-	if token == "" {
-		return nil, ErrNoToken
-	}
-	prov, err := auth.NewValueCookiesAuth(token, cookies)
-	if err != nil {
-		return nil, err
-	}
-	return New(ctx, prov)
 }
 
 type nopTape struct{}
@@ -117,14 +86,13 @@ func (nopTape) Close() error {
 
 // NewWithInfo is the same as New, but doesn't call the AuthTest on
 // initialisation.  Caller must ensure that the token is valid.
-func NewWithInfo(info *slack.AuthTestResponse, prov auth.Provider, opt ...Option) (*Client, error) {
-	hcl, err := prov.HTTPClient()
-	if err != nil {
-		return nil, err
+func NewWithInfo(info *slack.AuthTestResponse, token string, opt ...Option) (*Client, error) {
+	if token == "" {
+		return nil, ErrNoToken
 	}
 	c := &Client{
-		cl:           hcl,
-		token:        prov.SlackToken(),
+		cl:           http.DefaultClient, // callers pass OptionHTTPClient (the Slack-only transport)
+		token:        token,
 		teamID:       info.TeamID,
 		webclientAPI: info.URL + "api/",
 		edgeAPI:      fmt.Sprintf("https://edgeapi.%s/cache/%s/", getSlackBaseDomain(), info.TeamID),
@@ -135,22 +103,6 @@ func NewWithInfo(info *slack.AuthTestResponse, prov auth.Provider, opt ...Option
 		o(c)
 	}
 	return c, nil
-}
-
-func New(ctx context.Context, prov auth.Provider, opt ...Option) (*Client, error) {
-	info, err := prov.Test(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return NewWithInfo(&slack.AuthTestResponse{
-		URL:          info.URL,
-		Team:         info.Team,
-		User:         info.User,
-		TeamID:       info.TeamID,
-		UserID:       info.UserID,
-		EnterpriseID: info.EnterpriseID,
-		BotID:        info.BotID,
-	}, prov, opt...)
 }
 
 func (cl *Client) Raw() httpClient {
@@ -292,7 +244,7 @@ func do(ctx context.Context, cl httpClient, req *http.Request) (*http.Response, 
 
 	lg := slog.Default()
 	req.Header.Set("Accept-Language", "en-NZ,en-AU;q=0.9,en;q=0.8")
-	req.Header.Set("User-Agent", slackauth.DefaultUserAgent)
+	req.Header.Set("User-Agent", defaultUserAgent)
 
 	rgn := trace.StartRegion(ctx, "http.Do")
 	resp, err := cl.Do(req)

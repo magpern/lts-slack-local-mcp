@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"time"
 )
@@ -36,11 +37,15 @@ func (c Credential) FP() string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+var urlSafeCookie = regexp.MustCompile(`^[-._~%a-zA-Z0-9]+$`)
+
 // Cookies returns the HTTP cookies Slack expects for a browser session.
 func (c Credential) Cookies() []*http.Cookie {
+	// The browser's d cookie is already URL-escaped; a value supplied by hand may
+	// not be, so escape anything that is not URL-safe (never double-escape %).
 	val := c.Cookie
-	if dec, err := url.QueryUnescape(val); err != nil || dec == val {
-		// store raw; Slack accepts the escaped value as-is
+	if !urlSafeCookie.MatchString(val) {
+		val = url.QueryEscape(val)
 	}
 	return []*http.Cookie{
 		{Name: "d", Value: val, Domain: ".slack.com", Path: "/", Secure: true, HttpOnly: true},

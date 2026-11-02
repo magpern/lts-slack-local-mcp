@@ -3,14 +3,12 @@ package server
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/magpern/lts-slack-local-mcp/pkg/handler"
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider"
-	"github.com/magpern/lts-slack-local-mcp/pkg/server/auth"
 	"github.com/magpern/lts-slack-local-mcp/pkg/version"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -123,7 +121,6 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 		server.WithRecovery(),
 		server.WithToolHandlerMiddleware(buildErrorRecoveryMiddleware(logger)),
 		server.WithToolHandlerMiddleware(buildLoggerMiddleware(logger)),
-		server.WithToolHandlerMiddleware(auth.BuildMiddleware(provider.ServerTransport(), logger)),
 	)
 
 	// Install the authorization policy before any handler can run. Listing a
@@ -638,42 +635,6 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 	}
 }
 
-func (s *MCPServer) ServeSSE(addr string) *server.SSEServer {
-	s.logger.Info("Creating SSE server",
-		zap.String("context", "console"),
-		zap.String("version", version.Version),
-		zap.String("build_time", version.BuildTime),
-		zap.String("commit_hash", version.CommitHash),
-		zap.String("address", addr),
-	)
-	return server.NewSSEServer(s.server,
-		server.WithBaseURL(fmt.Sprintf("http://%s", addr)),
-		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			ctx = auth.AuthFromRequest(s.logger)(ctx, r)
-
-			return ctx
-		}),
-	)
-}
-
-func (s *MCPServer) ServeHTTP(addr string) *server.StreamableHTTPServer {
-	s.logger.Info("Creating HTTP server",
-		zap.String("context", "console"),
-		zap.String("version", version.Version),
-		zap.String("build_time", version.BuildTime),
-		zap.String("commit_hash", version.CommitHash),
-		zap.String("address", addr),
-	)
-	return server.NewStreamableHTTPServer(s.server,
-		server.WithEndpointPath("/mcp"),
-		server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			ctx = auth.AuthFromRequest(s.logger)(ctx, r)
-
-			return ctx
-		}),
-	)
-}
-
 func (s *MCPServer) ServeStdio() error {
 	s.logger.Info("Starting STDIO server",
 		zap.String("version", version.Version),
@@ -709,9 +670,10 @@ func buildErrorRecoveryMiddleware(logger *zap.Logger) server.ToolHandlerMiddlewa
 func buildLoggerMiddleware(logger *zap.Logger) server.ToolHandlerMiddleware {
 	return func(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 		return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// Tool arguments are not logged: they can contain message text and
+			// other personal data. Only the tool name is recorded.
 			logger.Info("Request received",
 				zap.String("tool", req.Params.Name),
-				zap.Any("params", req.Params),
 			)
 
 			startTime := time.Now()

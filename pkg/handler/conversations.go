@@ -19,7 +19,7 @@ import (
 	"github.com/magpern/lts-slack-local-mcp/pkg/limiter"
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider"
 	"github.com/magpern/lts-slack-local-mcp/pkg/provider/edge"
-	"github.com/magpern/lts-slack-local-mcp/pkg/server/auth"
+	"github.com/magpern/lts-slack-local-mcp/pkg/transport"
 	"github.com/magpern/lts-slack-local-mcp/pkg/text"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/slack-go/slack"
@@ -146,12 +146,6 @@ func NewConversationsHandler(apiProvider *provider.ApiProvider, logger *zap.Logg
 // UsersResource streams a CSV of all users
 func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	ch.logger.Debug("UsersResource called", zap.Any("params", request.Params))
-
-	// authentication
-	if authenticated, err := auth.IsAuthenticated(ctx, ch.apiProvider.ServerTransport(), ch.logger); !authenticated {
-		ch.logger.Error("Authentication failed for users resource", zap.Error(err))
-		return nil, err
-	}
 
 	// provider readiness
 	if ready, err := ch.apiProvider.IsReady(); !ready {
@@ -456,7 +450,6 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed size of %d bytes", fileInfo.Size, maxFileSizeBytes)
 	}
 
-	var buf bytes.Buffer
 	downloadURL := fileInfo.URLPrivateDownload
 	if downloadURL == "" {
 		downloadURL = fileInfo.URLPrivate
@@ -464,8 +457,15 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 	if downloadURL == "" {
 		return nil, errors.New("file has no downloadable URL")
 	}
+	// The download carries the Slack session. Only fetch from Slack-owned HTTPS
+	// hosts (the transport enforces this on every redirect hop as well).
+	if !transport.IsSlackURL(downloadURL) {
+		return nil, errors.New("refusing to download: the file URL is not an HTTPS Slack URL")
+	}
 
-	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, &buf)
+	// Bound the download by what is actually received, not by the size Slack reports.
+	buf := &limitedBuffer{limit: maxFileSizeBytes}
+	err = ch.apiProvider.Slack().GetFileContext(ctx, downloadURL, buf)
 	if err != nil {
 		ch.logger.Error("Slack GetFileContext failed", zap.Error(err))
 		return nil, err
@@ -1488,6 +1488,19 @@ func (ch *ConversationsHandler) marshalUnreadChannelsToCSV(channels []UnreadChan
 }
 
 var canonicalConversationID = regexp.MustCompile(`^[CDG][A-Z0-9]{2,}$`)
+
+// limitedBuffer is an io.Writer that fails once more than limit bytes arrive.
+type limitedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (l *limitedBuffer) Write(p []byte) (int, error) {
+	if l.Len()+len(p) > l.limit {
+		return 0, fmt.Errorf("download exceeds the maximum allowed size of %d bytes", l.limit)
+	}
+	return l.Buffer.Write(p)
+}
 
 func isChannelAllowedForConfig(channel, config string) bool {
 	switch strings.ToLower(strings.TrimSpace(config)) {

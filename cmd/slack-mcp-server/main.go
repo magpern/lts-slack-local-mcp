@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,15 +16,9 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-var defaultSseHost = "127.0.0.1"
-var defaultSsePort = 13080
-
 func main() {
-	var transport string
 	var enabledToolsFlag string
 	var noCache bool
-	flag.StringVar(&transport, "t", "stdio", "Transport type (stdio, sse or http)")
-	flag.StringVar(&transport, "transport", "stdio", "Transport type (stdio, sse or http)")
 	flag.StringVar(&enabledToolsFlag, "e", "", "Comma-separated list of enabled tools (empty = all tools)")
 	flag.StringVar(&enabledToolsFlag, "enabled-tools", "", "Comma-separated list of enabled tools (empty = all tools)")
 	flag.BoolVar(&noCache, "no-cache", false, "Skip user/channel cache loading on startup for faster initialization. Lookups by #channel-name or @username will not work; use channel/user IDs instead.")
@@ -45,7 +38,7 @@ func main() {
 		}
 	}
 
-	logger, err := newLogger(transport)
+	logger, err := newLogger()
 	if err != nil {
 		panic(err)
 	}
@@ -68,7 +61,7 @@ func main() {
 		)
 	}
 
-	p, err := newProvider(transport, logger)
+	p, err := newProvider(logger)
 	if err != nil {
 		logger.Fatal("Failed to initialise session state",
 			zap.String("context", "console"),
@@ -105,86 +98,17 @@ func main() {
 			zap.String("context", "console"))
 	}
 
-	switch transport {
-	case "stdio":
-		if err := s.ServeStdio(); err != nil {
-			logger.Fatal("Server error",
-				zap.String("context", "console"),
-				zap.Error(err),
-			)
-		}
-	case "sse":
-		host := os.Getenv("SLACK_MCP_HOST")
-		if host == "" {
-			host = defaultSseHost
-		}
-		port := os.Getenv("SLACK_MCP_PORT")
-		if port == "" {
-			port = strconv.Itoa(defaultSsePort)
-		}
-
-		sseServer := s.ServeSSE(":" + port)
-		logger.Info(
-			fmt.Sprintf("SSE server listening on %s", fmt.Sprintf("%s:%s/sse", host, port)),
+	if err := s.ServeStdio(); err != nil {
+		logger.Fatal("Server error",
 			zap.String("context", "console"),
-			zap.String("host", host),
-			zap.String("port", port),
-		)
-
-		if ready, _ := p.IsReady(); !ready {
-			logger.Info("Slack MCP Server is still warming up caches",
-				zap.String("context", "console"),
-			)
-		}
-
-		if err := sseServer.Start(host + ":" + port); err != nil {
-			logger.Fatal("Server error",
-				zap.String("context", "console"),
-				zap.Error(err),
-			)
-		}
-	case "http":
-		host := os.Getenv("SLACK_MCP_HOST")
-		if host == "" {
-			host = defaultSseHost
-		}
-		port := os.Getenv("SLACK_MCP_PORT")
-		if port == "" {
-			port = strconv.Itoa(defaultSsePort)
-		}
-
-		httpServer := s.ServeHTTP(":" + port)
-		logger.Info(
-			fmt.Sprintf("HTTP server listening on %s", fmt.Sprintf("%s:%s", host, port)),
-			zap.String("context", "console"),
-			zap.String("host", host),
-			zap.String("port", port),
-		)
-
-		if ready, _ := p.IsReady(); !ready {
-			logger.Info("Slack MCP Server is still warming up caches",
-				zap.String("context", "console"),
-			)
-		}
-
-		if err := httpServer.Start(host + ":" + port); err != nil {
-			logger.Fatal("Server error",
-				zap.String("context", "console"),
-				zap.Error(err),
-			)
-		}
-	default:
-		logger.Fatal("Invalid transport type",
-			zap.String("context", "console"),
-			zap.String("transport", transport),
-			zap.String("allowed", "stdio, sse, http"),
+			zap.Error(err),
 		)
 	}
 }
 
 // newProvider wires the session lifecycle: environment credentials (if set) are
 // an optional static override; otherwise the dedicated browser profile is used.
-func newProvider(transport string, logger *zap.Logger) (*provider.ApiProvider, error) {
+func newProvider(logger *zap.Logger) (*provider.ApiProvider, error) {
 	cfg := auth.ConfigFromEnv()
 	store, err := auth.OpenStore(cfg.DataDir)
 	if err != nil {
@@ -199,7 +123,7 @@ func newProvider(transport string, logger *zap.Logger) (*provider.ApiProvider, e
 	if haveEnv {
 		sess.AllowAutoFirstLogin() // static credentials: no browser, safe to connect unattended
 	}
-	return provider.NewLocal(transport, logger, sess), nil
+	return provider.NewLocal("stdio", logger, sess), nil
 }
 
 func hasEnvCredential() bool {
@@ -235,7 +159,7 @@ func validateToolConfig(config string) error {
 	return nil
 }
 
-func newLogger(transport string) (*zap.Logger, error) {
+func newLogger() (*zap.Logger, error) {
 	atomicLevel := zap.NewAtomicLevelAt(zap.InfoLevel)
 	if envLevel := os.Getenv("SLACK_MCP_LOG_LEVEL"); envLevel != "" {
 		if err := atomicLevel.UnmarshalText([]byte(envLevel)); err != nil {
@@ -247,10 +171,8 @@ func newLogger(transport string) (*zap.Logger, error) {
 	useJSON := shouldUseJSONFormat()
 	useColors := shouldUseColors() && !useJSON
 
-	outputPath := "stdout"
-	if transport == "stdio" {
-		outputPath = "stderr"
-	}
+	// stdout carries the stdio JSON-RPC stream, so logs go to stderr only.
+	outputPath := "stderr"
 
 	var config zap.Config
 
