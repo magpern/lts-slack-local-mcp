@@ -99,6 +99,11 @@ func (h *UsergroupsHandler) UsergroupsListHandler(ctx context.Context, request m
 func (h *UsergroupsHandler) UsergroupsCreateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	h.logger.Debug("UsergroupsCreateHandler called", zap.Any("params", request.Params))
 
+	if _, err := authorizeMutation(toolUsergroupsCreate); err != nil {
+		h.logger.Warn("Mutation denied", zap.String("tool", toolUsergroupsCreate), zap.Error(err))
+		return nil, err
+	}
+
 	if ready, err := h.apiProvider.IsReady(); !ready {
 		h.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
@@ -162,6 +167,11 @@ func (h *UsergroupsHandler) UsergroupsCreateHandler(ctx context.Context, request
 // UsergroupsUpdateHandler updates an existing user group's metadata
 func (h *UsergroupsHandler) UsergroupsUpdateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	h.logger.Debug("UsergroupsUpdateHandler called", zap.Any("params", request.Params))
+
+	if _, err := authorizeMutation(toolUsergroupsUpdate); err != nil {
+		h.logger.Warn("Mutation denied", zap.String("tool", toolUsergroupsUpdate), zap.Error(err))
+		return nil, err
+	}
 
 	if ready, err := h.apiProvider.IsReady(); !ready {
 		h.logger.Error("API provider not ready", zap.Error(err))
@@ -238,6 +248,11 @@ func (h *UsergroupsHandler) UsergroupsUpdateHandler(ctx context.Context, request
 func (h *UsergroupsHandler) UsergroupsUsersUpdateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	h.logger.Debug("UsergroupsUsersUpdateHandler called", zap.Any("params", request.Params))
 
+	if _, err := authorizeMutation(toolUsergroupsUsersUpd); err != nil {
+		h.logger.Warn("Mutation denied", zap.String("tool", toolUsergroupsUsersUpd), zap.Error(err))
+		return nil, err
+	}
+
 	if ready, err := h.apiProvider.IsReady(); !ready {
 		h.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
@@ -304,6 +319,14 @@ func (h *UsergroupsHandler) UsergroupsMeHandler(ctx context.Context, request mcp
 	action := request.GetString("action", "")
 	if action != "list" && action != "join" && action != "leave" {
 		return nil, errors.New("action must be 'list', 'join', or 'leave'")
+	}
+
+	// join/leave rewrite the group's member list; only "list" is read-only.
+	if action != "list" {
+		if _, err := authorizeMutation(toolUsergroupsMe); err != nil {
+			h.logger.Warn("Mutation denied", zap.String("tool", toolUsergroupsMe), zap.String("action", action), zap.Error(err))
+			return nil, err
+		}
 	}
 
 	// Get current user ID

@@ -179,6 +179,11 @@ func (h *SavedHandler) SavedListHandler(ctx context.Context, request mcp.CallToo
 func (h *SavedHandler) SavedUpdateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	h.logger.Debug("SavedUpdateHandler called", zap.Any("params", request.Params))
 
+	if _, err := authorizeMutation(toolSavedUpdate); err != nil {
+		h.logger.Warn("Mutation denied", zap.String("tool", toolSavedUpdate), zap.Error(err))
+		return nil, err
+	}
+
 	itemID := request.GetString("item_id", "")
 	ts := request.GetString("ts", "")
 	mark := request.GetString("mark", "")
@@ -216,6 +221,11 @@ func (h *SavedHandler) SavedUpdateHandler(ctx context.Context, request mcp.CallT
 
 func (h *SavedHandler) SavedClearCompletedHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	h.logger.Debug("SavedClearCompletedHandler called", zap.Any("params", request.Params))
+
+	if _, err := authorizeMutation(toolSavedClear); err != nil {
+		h.logger.Warn("Mutation denied", zap.String("tool", toolSavedClear), zap.Error(err))
+		return nil, err
+	}
 
 	err := h.apiProvider.Slack().SavedClearCompleted(ctx)
 	if err != nil {

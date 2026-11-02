@@ -191,6 +191,11 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("params", request.Params))
 
+	if _, err := authorizeMutation(toolAddMessage); err != nil {
+		ch.logger.Warn("Mutation denied", zap.String("tool", toolAddMessage), zap.Error(err))
+		return nil, err
+	}
+
 	// provider readiness
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		ch.logger.Error("API provider not ready", zap.Error(err))
@@ -272,13 +277,18 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))
 
+	if _, err := authorizeMutation(toolReactionsAdd); err != nil {
+		ch.logger.Warn("Mutation denied", zap.String("tool", toolReactionsAdd), zap.Error(err))
+		return nil, err
+	}
+
 	// provider readiness
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		ch.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolReaction(ctx, request)
+	params, err := ch.parseParamsToolReaction(ctx, request, toolReactionsAdd)
 	if err != nil {
 		ch.logger.Error("Failed to parse add-reaction params", zap.Error(err))
 		return nil, err
@@ -308,13 +318,18 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ReactionsRemoveHandler called", zap.Any("params", request.Params))
 
+	if _, err := authorizeMutation(toolReactionsRemove); err != nil {
+		ch.logger.Warn("Mutation denied", zap.String("tool", toolReactionsRemove), zap.Error(err))
+		return nil, err
+	}
+
 	// provider readiness
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		ch.logger.Error("API provider not ready", zap.Error(err))
 		return nil, err
 	}
 
-	params, err := ch.parseParamsToolReaction(ctx, request)
+	params, err := ch.parseParamsToolReaction(ctx, request, toolReactionsRemove)
 	if err != nil {
 		ch.logger.Error("Failed to parse remove-reaction params", zap.Error(err))
 		return nil, err
@@ -407,6 +422,11 @@ func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request 
 
 func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("FilesGetHandler called", zap.Any("params", request.Params))
+
+	if _, err := authorizeMutation(toolAttachmentGetData); err != nil {
+		ch.logger.Warn("Mutation denied", zap.String("tool", toolAttachmentGetData), zap.Error(err))
+		return nil, err
+	}
 
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		ch.logger.Error("API provider not ready", zap.Error(err))
@@ -1327,6 +1347,11 @@ func (ch *ConversationsHandler) getChannelDisplayName(info *slack.Channel, chann
 func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsMarkHandler called", zap.Any("params", request.Params))
 
+	if _, err := authorizeMutation(toolConversationsMark); err != nil {
+		ch.logger.Warn("Mutation denied", zap.String("tool", toolConversationsMark), zap.Error(err))
+		return nil, err
+	}
+
 	params, err := ch.parseParamsToolMark(request)
 	if err != nil {
 		ch.logger.Error("Failed to parse mark params", zap.Error(err))
@@ -1372,6 +1397,11 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 func (ch *ConversationsHandler) ConversationsLeaveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsLeaveHandler called", zap.Any("params", request.Params))
 
+	if _, err := authorizeMutation(toolConversationsLeave); err != nil {
+		ch.logger.Warn("Mutation denied", zap.String("tool", toolConversationsLeave), zap.Error(err))
+		return nil, err
+	}
+
 	channel := request.GetString("channel_id", "")
 	if channel == "" {
 		return nil, fmt.Errorf("channel_id is required")
@@ -1399,6 +1429,11 @@ func (ch *ConversationsHandler) ConversationsLeaveHandler(ctx context.Context, r
 
 func (ch *ConversationsHandler) ConversationsJoinHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ch.logger.Debug("ConversationsJoinHandler called", zap.Any("params", request.Params))
+
+	if _, err := authorizeMutation(toolConversationsJoin); err != nil {
+		ch.logger.Warn("Mutation denied", zap.String("tool", toolConversationsJoin), zap.Error(err))
+		return nil, err
+	}
 
 	channel := request.GetString("channel_id", "")
 	if channel == "" {
@@ -1730,20 +1765,10 @@ func (ch *ConversationsHandler) parseParamsToolConversations(ctx context.Context
 }
 
 func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, request mcp.CallToolRequest) (*addMessageParams, error) {
-	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_TOOL")
-	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
-
-	if toolConfig == "" {
-		if !strings.Contains(enabledTools, "conversations_add_message") {
-			ch.logger.Error("Add-message tool disabled by default")
-			return nil, errors.New(
-				"by default, the conversations_add_message tool is disabled to guard Slack workspaces against accidental spamming. " +
-					"To enable it, set the SLACK_MCP_ADD_MESSAGE_TOOL environment variable to true, 1, or comma separated list of channels " +
-					"to limit where the MCP can post messages, e.g. 'SLACK_MCP_ADD_MESSAGE_TOOL=C1234567890,D0987654321', 'SLACK_MCP_ADD_MESSAGE_TOOL=!C1234567890' " +
-					"to enable all except one or 'SLACK_MCP_ADD_MESSAGE_TOOL=true' for all channels and DMs",
-			)
-		}
-		toolConfig = "true"
+	toolConfig, authErr := authorizeMutation(toolAddMessage)
+	if authErr != nil {
+		ch.logger.Warn("Add-message tool not authorized", zap.Error(authErr))
+		return nil, authErr
 	}
 
 	channel := request.GetString("channel_id", "")
@@ -1756,7 +1781,7 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 		ch.logger.Error("Channel not found", zap.String("channel", channel), zap.Error(err))
 		return nil, err
 	}
-	if !isChannelAllowed(channel) {
+	if !isChannelAllowedForConfig(channel, toolConfig) {
 		ch.logger.Warn("Add-message tool not allowed for channel", zap.String("channel", channel), zap.String("policy", toolConfig))
 		return nil, fmt.Errorf("conversations_add_message tool is not allowed for channel %q, applied policy: %s", channel, toolConfig)
 	}
@@ -1825,21 +1850,11 @@ func (ch *ConversationsHandler) parseParamsToolAddMessage(ctx context.Context, r
 	}, nil
 }
 
-func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, request mcp.CallToolRequest) (*addReactionParams, error) {
-	toolConfig := os.Getenv("SLACK_MCP_REACTION_TOOL")
-	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
-
-	if toolConfig == "" {
-		if !strings.Contains(enabledTools, "reactions_add") && !strings.Contains(enabledTools, "reactions_remove") {
-			ch.logger.Error("Reactions tool disabled by default")
-			return nil, errors.New(
-				"by default, the reactions tools are disabled to guard Slack workspaces against accidental spamming. " +
-					"To enable them, set the SLACK_MCP_REACTION_TOOL environment variable to true, 1, or comma separated list of channels " +
-					"to limit where the MCP can manage reactions, e.g. 'SLACK_MCP_REACTION_TOOL=C1234567890,D0987654321', 'SLACK_MCP_REACTION_TOOL=!C1234567890' " +
-					"to enable all except one or 'SLACK_MCP_REACTION_TOOL=true' for all channels and DMs",
-			)
-		}
-		toolConfig = "true"
+func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, request mcp.CallToolRequest, tool string) (*addReactionParams, error) {
+	toolConfig, authErr := authorizeMutation(tool)
+	if authErr != nil {
+		ch.logger.Warn("Reactions tool not authorized", zap.Error(authErr))
+		return nil, authErr
 	}
 
 	channel := request.GetString("channel_id", "")
@@ -1874,22 +1889,9 @@ func (ch *ConversationsHandler) parseParamsToolReaction(ctx context.Context, req
 }
 
 func (ch *ConversationsHandler) parseParamsToolFilesGet(request mcp.CallToolRequest) (*filesGetParams, error) {
-	toolConfig := os.Getenv("SLACK_MCP_ATTACHMENT_TOOL")
-	enabledTools := os.Getenv("SLACK_MCP_ENABLED_TOOLS")
-
-	if toolConfig == "" {
-		if !strings.Contains(enabledTools, "attachment_get_data") {
-			ch.logger.Error("Attachment tool disabled by default")
-			return nil, errors.New(
-				"by default, the attachment_get_data tool is disabled. " +
-					"To enable it, set the SLACK_MCP_ATTACHMENT_TOOL environment variable to true or 1",
-			)
-		}
-		toolConfig = "true"
-	}
-	if toolConfig != "true" && toolConfig != "1" && toolConfig != "yes" {
-		ch.logger.Error("Attachment tool disabled", zap.String("config", toolConfig))
-		return nil, errors.New("SLACK_MCP_ATTACHMENT_TOOL must be set to 'true', '1', or 'yes' to enable")
+	if _, authErr := authorizeMutation(toolAttachmentGetData); authErr != nil {
+		ch.logger.Warn("Attachment tool not authorized", zap.Error(authErr))
+		return nil, authErr
 	}
 
 	fileID := request.GetString("file_id", "")
@@ -1934,21 +1936,9 @@ func (ch *ConversationsHandler) parseParamsToolUnreads(request mcp.CallToolReque
 }
 
 func (ch *ConversationsHandler) parseParamsToolMark(request mcp.CallToolRequest) (*markParams, error) {
-	toolConfig := os.Getenv("SLACK_MCP_MARK_TOOL")
-	if toolConfig == "" {
-		ch.logger.Error("Mark tool disabled by default")
-		return nil, errors.New(
-			"by default, the conversations_mark tool is disabled to prevent accidental marking of messages as read. " +
-				"To enable it, set the SLACK_MCP_MARK_TOOL environment variable to true or 1, " +
-				"e.g. 'SLACK_MCP_MARK_TOOL=true'",
-		)
-	}
-	if toolConfig != "1" && toolConfig != "true" && toolConfig != "yes" {
-		ch.logger.Error("Mark tool disabled by config", zap.String("config", toolConfig))
-		return nil, errors.New(
-			"the conversations_mark tool is disabled. " +
-				"To enable it, set the SLACK_MCP_MARK_TOOL environment variable to true or 1",
-		)
+	if _, authErr := authorizeMutation(toolConversationsMark); authErr != nil {
+		ch.logger.Warn("Mark tool not authorized", zap.Error(authErr))
+		return nil, authErr
 	}
 
 	channel := request.GetString("channel_id", "")
