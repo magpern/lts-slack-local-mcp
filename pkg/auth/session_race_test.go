@@ -179,3 +179,43 @@ func TestUnitWaiterHonoursContext(t *testing.T) {
 	}
 	close(release)
 }
+
+// Logout gives up waiting for a harvester that ignores cancellation; a Login that
+// then starts must not be overwritten by the old harvest finishing later. Only the
+// epoch (not the suspended flag, which Login has cleared) can discard it.
+func TestUnitStaleHarvestDiscardedByEpochAfterLogoutTimeout(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h := &funcHarvester{fn: func(call int, ctx context.Context, headless bool, accept func(Credential) bool) (bool, error) {
+		if call == 1 {
+			close(started)
+			<-release
+			return accept(cred("xoxc-A")), nil
+		}
+		return accept(cred("xoxc-B")), nil
+	}}
+	sa, store, _ := newTestAuth(t, h, twoAccounts())
+	sa.logoutWait = 50 * time.Millisecond
+
+	getErr := make(chan error, 1)
+	go func() { _, _, _, err := sa.Get(context.Background()); getErr <- err }()
+	<-started
+	if err := sa.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	loginID := make(chan *Identity, 1)
+	go func() { id, _ := sa.Login(context.Background()); loginID <- id }()
+	time.Sleep(100 * time.Millisecond) // Login is queued behind the stuck harvest
+	close(release)                     // the old harvest now finishes with suspended=false
+
+	if err := <-getErr; err == nil {
+		t.Fatal("the pre-logout harvest must be discarded")
+	}
+	id := <-loginID
+	if id == nil || id.UserID != "U2" {
+		t.Fatalf("login must end up on the new account, got %v", id)
+	}
+	if p := store.Pin(); p == nil || p.UserID != "U2" {
+		t.Fatalf("pin = %v", p)
+	}
+}

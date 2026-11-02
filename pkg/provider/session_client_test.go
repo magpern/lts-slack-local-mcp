@@ -211,3 +211,27 @@ func TestUnitIsAuthErrorClassification(t *testing.T) {
 		t.Error("nil is not an auth error")
 	}
 }
+
+// onBind must run after the client build lock is released: the real callback
+// cancels cache warm-ups, which may themselves be waiting to bind. A callback
+// that needs the lock must therefore not deadlock.
+func TestUnitOnBindRunsOutsideBuildLock(t *testing.T) {
+	f := newFakeSlack("xoxc-A")
+	sc, _ := newTestSessionClient(t, f, cr("xoxc-A"))
+	done := make(chan struct{})
+	sc.onBind = func(auth.Identity) {
+		sc.buildMu.Lock() // would deadlock if bind still held buildMu
+		sc.buildMu.Unlock()
+		close(done)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := sc.connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("onBind ran under the build lock")
+	}
+}

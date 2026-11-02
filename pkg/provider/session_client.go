@@ -109,24 +109,34 @@ func (s *sessionClient) connect(ctx context.Context) (*boundClient, *boundClient
 }
 
 func (s *sessionClient) bind(cred auth.Credential, id auth.Identity, gen uint64) (*boundClient, error) {
-	if b := s.cur.Load(); b != nil && b.gen == gen {
-		return b, nil
-	}
-	s.buildMu.Lock()
-	defer s.buildMu.Unlock()
 	if b := s.cur.Load(); b != nil && b.gen >= gen {
 		return b, nil // never install an older generation over a newer one
 	}
-	c, err := s.newClient(cred)
+	b, switched, err := s.build(cred, id, gen)
 	if err != nil {
 		return nil, err
 	}
-	b := &boundClient{c: c, gen: gen, fp: cred.FP(), id: id}
-	prev := s.cur.Swap(b)
-	if s.onBind != nil && (prev == nil || prev.id != id) {
+	// onBind runs after the build lock is released: it cancels cache warm-ups,
+	// which may themselves be waiting for that lock.
+	if switched && s.onBind != nil {
 		s.onBind(id)
 	}
 	return b, nil
+}
+
+func (s *sessionClient) build(cred auth.Credential, id auth.Identity, gen uint64) (*boundClient, bool, error) {
+	s.buildMu.Lock()
+	defer s.buildMu.Unlock()
+	if b := s.cur.Load(); b != nil && b.gen >= gen {
+		return b, false, nil
+	}
+	c, err := s.newClient(cred)
+	if err != nil {
+		return nil, false, err
+	}
+	b := &boundClient{c: c, gen: gen, fp: cred.FP(), id: id}
+	prev := s.cur.Swap(b)
+	return b, prev == nil || !prev.id.SameAccount(id), nil
 }
 
 // reset drops the inner client (used on logout).
@@ -175,6 +185,10 @@ func (s *sessionClient) recover(ctx context.Context, mutation bool, failed *boun
 	nb, berr := s.bind(cred, id, ngen)
 	if berr != nil {
 		return berr
+	}
+	if mutation && failed != nil && failed.c == nil {
+		// Rejected while building the client: the change never reached Slack.
+		return fmt.Errorf("Slack rejected the session before the change was sent; the session was refreshed and the change was NOT applied: %w", cause)
 	}
 	if mutation {
 		return fmt.Errorf("Slack rejected the session during this change; the session was refreshed but the change was NOT retried and may or may not have been applied. Check the result before retrying: %w", cause)

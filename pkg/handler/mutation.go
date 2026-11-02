@@ -85,6 +85,16 @@ func OptInEnvVar(tool string) (string, bool) {
 	return g.env, ok
 }
 
+// OptedIn reports whether the tool's dedicated opt-in is currently set to an
+// enabling value (the same test the handler applies). Used for registration.
+func OptedIn(tool string) bool {
+	g, ok := guards[tool]
+	if !ok {
+		return false
+	}
+	return optedIn(os.Getenv(g.env), g.channelList)
+}
+
 func optedIn(v string, channelList bool) bool {
 	v = strings.ToLower(strings.TrimSpace(v))
 	switch v {

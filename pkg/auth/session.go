@@ -46,9 +46,11 @@ type SessionAuth struct {
 	clock func() time.Time
 
 	// Filesystem hooks, replaceable in tests to inject cleanup failures.
-	removeAll func(string) error
-	rename    func(oldpath, newpath string) error
+	logoutWait time.Duration // how long Logout waits for a harvest to stop
+	removeAll  func(string) error
+	rename     func(oldpath, newpath string) error
 
+	lifeMu     sync.Mutex // serializes Login and Logout, including profile deletion
 	mu         sync.Mutex
 	cond       *sync.Cond
 	harvesting bool
@@ -71,11 +73,12 @@ func NewSessionAuth(cfg Config, store *Store, harv Harvester, val Validator, log
 	}
 	s := &SessionAuth{
 		cfg: cfg, store: store, harv: harv, val: val, log: log,
-		clock:     time.Now,
-		removeAll: os.RemoveAll,
-		rename:    os.Rename,
-		rejected:  map[string]bool{},
-		suspended: store.SignedOut(),
+		clock:      time.Now,
+		logoutWait: 25 * time.Second,
+		removeAll:  os.RemoveAll,
+		rename:     os.Rename,
+		rejected:   map[string]bool{},
+		suspended:  store.SignedOut(),
 	}
 	s.cond = sync.NewCond(&s.mu)
 	return s
@@ -133,9 +136,11 @@ func (s *SessionAuth) HandleAuthFailure(ctx context.Context, failedGen uint64, f
 // Login forces a fresh acquisition and re-pins whatever allowed account is
 // signed in, re-enabling auto-login. It authorizes switching accounts.
 func (s *SessionAuth) Login(ctx context.Context) (*Identity, error) {
+	s.lifeMu.Lock()
 	// A profile left behind by a failed logout must never be reused.
 	if s.store.ProfileDirty() {
 		if err := s.deleteProfile(); err != nil {
+			s.lifeMu.Unlock()
 			return nil, fmt.Errorf("a previous logout could not remove the browser profile; close any browser using it and call login again: %w", err)
 		}
 	}
@@ -146,6 +151,10 @@ func (s *SessionAuth) Login(ctx context.Context) (*Identity, error) {
 	s.rejected = map[string]bool{}
 	_ = s.store.ClearSignedOut()
 	s.mu.Unlock()
+	// The sign-in itself (which can wait minutes for the user) runs outside the
+	// lifecycle lock so Logout can interrupt it: Logout bumps the epoch, cancels
+	// the harvest and this acquire is discarded.
+	s.lifeMu.Unlock()
 	_, id, _, err := s.acquire(ctx, modeLogin)
 	if err != nil {
 		return nil, err
@@ -157,6 +166,8 @@ func (s *SessionAuth) Login(ctx context.Context) (*Identity, error) {
 // the dedicated profile (quarantining it if deletion fails). A harvest already
 // in flight will find suspended=true when it completes and discard its result.
 func (s *SessionAuth) Logout(ctx context.Context) error {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
 	s.mu.Lock()
 	s.epoch++
 	s.suspended = true
@@ -166,7 +177,7 @@ func (s *SessionAuth) Logout(ctx context.Context) error {
 	if s.cancelHarv != nil {
 		s.cancelHarv() // stop any browser before touching its profile
 	}
-	s.waitIdleLocked(15 * time.Second)
+	s.waitIdleLocked(s.logoutWait)
 	s.mu.Unlock()
 	if persistErr != nil {
 		// Without a durable signed-out marker a restart would reconnect.
@@ -278,7 +289,7 @@ func (s *SessionAuth) acquire(ctx context.Context, mode acquireMode) (Credential
 		if s.suspended {
 			return Credential{}, Identity{}, 0, ErrSignedOut
 		}
-		return Credential{}, Identity{}, 0, context.Canceled
+		return Credential{}, Identity{}, 0, ErrSuperseded
 	}
 	if accepted == nil {
 		// A proactive TTL refresh that fails must not discard a credential Slack
@@ -325,8 +336,9 @@ func (s *SessionAuth) runHarvest(ctx context.Context, pin *Identity, rejected ma
 	var accepted *candidate
 	refusals := map[string]bool{}
 
+	refused := map[string]bool{} // fingerprints already refused: do not re-validate every poll
 	accept := func(c Credential) bool {
-		if accepted != nil || rejected[c.FP()] {
+		if accepted != nil || rejected[c.FP()] || refused[c.FP()] {
 			return accepted != nil
 		}
 		id, err := s.val.Identify(ctx, c)
@@ -335,10 +347,12 @@ func (s *SessionAuth) runHarvest(ctx context.Context, pin *Identity, rejected ma
 		}
 		if !s.cfg.teamAllowed(id.TeamID) {
 			refusals["notallowed"] = true
+			refused[c.FP()] = true
 			return false
 		}
 		if pin != nil && !id.SameAccount(*pin) {
 			refusals["identity"] = true
+			refused[c.FP()] = true
 			return false
 		}
 		accepted = &candidate{cred: c, id: *id, refreshAt: s.clock().Add(s.ttl())}
@@ -346,7 +360,7 @@ func (s *SessionAuth) runHarvest(ctx context.Context, pin *Identity, rejected ma
 	}
 
 	_, _ = s.harv.Harvest(ctx, true, s.cfg.HeadlessTimeout, accept)
-	if interactive && accepted == nil {
+	if interactive && accepted == nil && ctx.Err() == nil {
 		_, _ = s.harv.Harvest(ctx, false, s.cfg.LoginTimeout, accept)
 	}
 	return accepted, refusals

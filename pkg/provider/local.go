@@ -82,7 +82,7 @@ func (ap *ApiProvider) Logout(ctx context.Context) (profileDeleted bool, err err
 // account: caches are repartitioned per user and re-warmed.
 func (ap *ApiProvider) bindIdentity(id auth.Identity) {
 	prev := ap.bound.Swap(&id)
-	if prev != nil && *prev == id {
+	if prev != nil && prev.SameAccount(id) {
 		return
 	}
 	up, uerr := ap.cachePath(id, "users_cache.json", "SLACK_MCP_USERS_CACHE")
@@ -96,7 +96,10 @@ func (ap *ApiProvider) bindIdentity(id auth.Identity) {
 	ap.usersCachePath, ap.channelsCachePath = up, cp
 	ap.pathsMu.Unlock()
 	if prev != nil {
-		ap.stopWarmers()
+		// Cancel only: bindIdentity runs under the client build lock, which an
+		// in-flight warm-up may itself need, so waiting here could deadlock.
+		// Stale results are discarded by the cache generation instead.
+		ap.cancelWarmers()
 		ap.resetCaches() // account switch: drop the previous user's data
 	}
 	if ap.skipCache.Load() {
@@ -116,12 +119,16 @@ func (ap *ApiProvider) bindIdentity(id auth.Identity) {
 
 // stopWarmers cancels any in-flight cache warm-up and waits for it to finish.
 func (ap *ApiProvider) stopWarmers() {
+	ap.cancelWarmers()
+	ap.warmWG.Wait()
+}
+
+func (ap *ApiProvider) cancelWarmers() {
 	ap.warmMu.Lock()
 	if ap.warmCancel != nil {
 		ap.warmCancel()
 	}
 	ap.warmMu.Unlock()
-	ap.warmWG.Wait()
 }
 
 func (ap *ApiProvider) cachePath(id auth.Identity, name, envKey string) (string, error) {
@@ -144,6 +151,9 @@ func (ap *ApiProvider) warmCaches(ctx context.Context) {
 }
 
 func (ap *ApiProvider) resetCaches() {
+	ap.cacheMu.Lock()
+	defer ap.cacheMu.Unlock()
+	ap.cacheGen.Add(1)
 	ap.usersSnapshot.Store(&UsersCache{Users: map[string]slack.User{}, UsersInv: map[string]string{}})
 	ap.channelsSnapshot.Store(&ChannelsCache{Channels: map[string]Channel{}, ChannelsInv: map[string]string{}})
 	ap.usersReady.Store(false)

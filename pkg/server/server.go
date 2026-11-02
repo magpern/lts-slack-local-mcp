@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -110,7 +109,7 @@ func shouldAddTool(name string, enabledTools []string, envVarName string) bool {
 	}
 
 	if len(enabledTools) == 0 {
-		return os.Getenv(envVarName) != ""
+		return handler.OptedIn(name)
 	}
 
 	return false

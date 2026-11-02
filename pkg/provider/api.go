@@ -260,6 +260,9 @@ type ApiProvider struct {
 	bound     boundIdentity // account the caches currently belong to
 	skipCache atomic.Bool
 
+	cacheMu  sync.Mutex // serializes cache commits against resets
+	cacheGen atomic.Uint64
+
 	warmMu     sync.Mutex // guards warmCancel
 	warmCancel context.CancelFunc
 	warmWG     sync.WaitGroup
@@ -758,7 +761,9 @@ func (ap *ApiProvider) spawnBackgroundUsersRefresh() {
 	}
 	go func() {
 		defer ap.refreshingUsers.Store(false)
-		if err := ap.fetchAndStoreUsers(context.Background()); err != nil {
+		ctx, cancel := bgCtx()
+		defer cancel()
+		if err := ap.fetchAndStoreUsers(ctx); err != nil {
 			ap.logger.Warn("Background users refresh failed, continuing with stale data",
 				zap.Error(err))
 		}
@@ -770,6 +775,7 @@ func (ap *ApiProvider) spawnBackgroundUsersRefresh() {
 func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 	ap.fetchUsersMu.Lock()
 	defer ap.fetchUsersMu.Unlock()
+	gen := ap.cacheGen.Load()
 
 	var (
 		list        []slack.User
@@ -804,7 +810,9 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 		newSnapshot.UsersInv[user.Name] = user.ID
 	}
 	// Store intermediate snapshot so GetSlackConnect can read current users
-	ap.usersSnapshot.Store(newSnapshot)
+	if !ap.commitCache(gen, func() { ap.usersSnapshot.Store(newSnapshot) }) {
+		return errStaleFetch
+	}
 
 	connectUsers, err := ap.GetSlackConnect(ctx)
 	if err != nil {
@@ -829,14 +837,20 @@ func (ap *ApiProvider) fetchAndStoreUsers(ctx context.Context) error {
 			finalSnapshot.Users[user.ID] = user
 			finalSnapshot.UsersInv[user.Name] = user.ID
 		}
-		ap.usersSnapshot.Store(finalSnapshot)
+		if !ap.commitCache(gen, func() { ap.usersSnapshot.Store(finalSnapshot) }) {
+			return errStaleFetch
+		}
 	}
 
 	if data, err := json.MarshalIndent(list, "", "  "); err != nil {
 		ap.logger.Error("Failed to marshal users for cache", zap.Error(err))
 	} else {
 		// Atomic write: temp file + rename to prevent partial/corrupt files
-		if err := atomicWriteFile(ap.usersPath(), data, 0600); err != nil {
+		var err error
+		if !ap.commitCache(gen, func() { err = atomicWriteFile(ap.usersPath(), data, 0600) }) {
+			return errStaleFetch
+		}
+		if err != nil {
 			ap.logger.Error("Failed to write cache file",
 				zap.String("cache_file", ap.usersPath()),
 				zap.Error(err))
@@ -965,7 +979,9 @@ func (ap *ApiProvider) spawnBackgroundChannelsRefresh() {
 	}
 	go func() {
 		defer ap.refreshingChannels.Store(false)
-		if err := ap.fetchAndStoreChannels(context.Background()); err != nil {
+		ctx, cancel := bgCtx()
+		defer cancel()
+		if err := ap.fetchAndStoreChannels(ctx); err != nil {
 			ap.logger.Warn("Background channels refresh failed, continuing with stale data",
 				zap.Error(err))
 		}
@@ -977,6 +993,7 @@ func (ap *ApiProvider) spawnBackgroundChannelsRefresh() {
 func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
 	ap.fetchChannelsMu.Lock()
 	defer ap.fetchChannelsMu.Unlock()
+	gen := ap.cacheGen.Load()
 
 	channels := ap.GetChannels(ctx, AllChanTypes)
 
@@ -992,7 +1009,11 @@ func (ap *ApiProvider) fetchAndStoreChannels(ctx context.Context) error {
 		ap.logger.Error("Failed to marshal channels for cache", zap.Error(err))
 	} else {
 		// Atomic write: temp file + rename to prevent partial/corrupt files
-		if err := atomicWriteFile(ap.channelsPath(), data, 0600); err != nil {
+		var err error
+		if !ap.commitCache(gen, func() { err = atomicWriteFile(ap.channelsPath(), data, 0600) }) {
+			return errStaleFetch
+		}
+		if err != nil {
 			ap.logger.Error("Failed to write cache file",
 				zap.String("cache_file", ap.channelsPath()),
 				zap.Error(err))
@@ -1116,6 +1137,7 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 	// conversations.list API supports multiple types per request, and the edge
 	// API (Enterprise Grid + non-OAuth) returns all types regardless. This
 	// avoids making 4 separate API round-trips (one per type).
+	gen := ap.cacheGen.Load()
 	chans := ap.getChannelsMultiType(ctx, AllChanTypes)
 
 	// Build new snapshot with all fetched channels
@@ -1127,7 +1149,9 @@ func (ap *ApiProvider) GetChannels(ctx context.Context, channelTypes []string) [
 		newSnapshot.Channels[ch.ID] = ch
 		newSnapshot.ChannelsInv[ch.Name] = ch.ID
 	}
-	ap.channelsSnapshot.Store(newSnapshot)
+	if !ap.commitCache(gen, func() { ap.channelsSnapshot.Store(newSnapshot) }) {
+		return nil // the account changed while fetching: drop the result
+	}
 
 	// Filter by requested channel types
 	var res []Channel
@@ -1347,4 +1371,24 @@ func MapChannelFromSlack(c slack.Channel, usersMap map[string]slack.User) Channe
 		c.IsIM, c.IsMpIM, c.IsPrivate, c.IsExtShared,
 		usersMap,
 	)
+}
+
+// errStaleFetch means the account changed (logout or switch) while a cache
+// refresh was in flight; its result is discarded.
+var errStaleFetch = errors.New("cache refresh discarded: account changed")
+
+// commitCache runs fn (a snapshot store or cache-file write) only if no reset
+// happened since the fetch began (gen), atomically with respect to resets.
+func (ap *ApiProvider) commitCache(gen uint64, fn func()) bool {
+	ap.cacheMu.Lock()
+	defer ap.cacheMu.Unlock()
+	if ap.cacheGen.Load() != gen {
+		return false
+	}
+	fn()
+	return true
+}
+
+func bgCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), callTimeout)
 }

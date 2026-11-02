@@ -98,6 +98,8 @@ var (
 	ErrNotLoggedIn = errors.New("not signed in to Slack yet. Call the login tool and complete sign-in in the browser window")
 	// ErrNoSession means no usable session could be acquired.
 	ErrNoSession = errors.New("could not obtain a Slack session. Call the login tool and complete sign-in in the browser window")
+	// ErrSuperseded means a newer login or logout replaced the sign-in this call was waiting on.
+	ErrSuperseded = errors.New("this sign-in was superseded by a newer login or logout; retry")
 	// ErrNoBrowser means no supported browser was found. rod is never allowed to
 	// download one: this tool holds session credentials.
 	ErrNoBrowser = errors.New("no supported browser found (Edge or Chrome). Install one or set SLACK_LOCAL_BROWSER_BIN")

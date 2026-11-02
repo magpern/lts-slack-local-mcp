@@ -53,15 +53,22 @@ func (h *RodHarvester) Harvest(ctx context.Context, headless bool, timeout time.
 	// then make sure the process is gone so it cannot hold the profile. The
 	// profile directory itself is never deleted here: it is the persistent session.
 	browser := rod.New().ControlURL(controlURL).Context(ctx)
+	connected := false
 	defer func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = browser.Context(cctx).Close()
-		proc.stop(5 * time.Second)
+		if connected { // Close on an unconnected browser would dereference a nil client
+			cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = browser.Context(cctx).Close()
+			cancel()
+		}
+		proc.stop(3 * time.Second)
+		// The launcher process can exit after re-spawning the real browser, so
+		// also stop anything still running against this profile.
+		killProfileProcesses(h.cfg.ProfileDir)
 	}()
 	if err := browser.Connect(); err != nil {
 		return false, err
 	}
+	connected = true
 
 	page, err := browser.Page(proto.TargetCreateTarget{URL: h.cfg.WorkspaceURL})
 	if err != nil {
@@ -198,7 +205,6 @@ func (h *RodHarvester) startBrowser(ctx context.Context, bin string, headless bo
 	args := []string{
 		"--user-data-dir=" + h.cfg.ProfileDir,
 		"--remote-debugging-port=0",
-		"--remote-allow-origins=http://127.0.0.1",
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-blink-features=AutomationControlled",
@@ -210,6 +216,9 @@ func (h *RodHarvester) startBrowser(ctx context.Context, bin string, headless bo
 	}
 	args = append(args, "about:blank")
 
+	if err := ctx.Err(); err != nil {
+		return nil, "", err // never flash a window for an already-cancelled harvest
+	}
 	cmd := exec.Command(bin, args...)
 	var errOut limitedBuf
 	cmd.Stderr = &errOut
