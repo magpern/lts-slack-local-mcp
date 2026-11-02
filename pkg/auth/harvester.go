@@ -3,11 +3,15 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"go.uber.org/zap"
 )
@@ -37,25 +41,27 @@ func (h *RodHarvester) Harvest(ctx context.Context, headless bool, timeout time.
 		return false, err
 	}
 
-	l := launcher.New().
-		UserDataDir(h.cfg.ProfileDir).
-		Headless(headless).
-		Leakless(false). // leakless helper is often flagged by endpoint security
-		Set("disable-blink-features", "AutomationControlled")
-	if bin := h.resolveBin(); bin != "" {
-		l = l.Bin(bin)
+	bin := h.resolveBin()
+	if bin == "" {
+		return false, ErrNoBrowser
 	}
-	controlURL, err := l.Launch()
+	proc, controlURL, err := h.startBrowser(ctx, bin, headless)
 	if err != nil {
 		return false, err
 	}
-	defer l.Cleanup()
-
+	// Close politely on a fresh context (the caller's may already be cancelled),
+	// then make sure the process is gone so it cannot hold the profile. The
+	// profile directory itself is never deleted here: it is the persistent session.
 	browser := rod.New().ControlURL(controlURL).Context(ctx)
+	defer func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = browser.Context(cctx).Close()
+		proc.stop(5 * time.Second)
+	}()
 	if err := browser.Connect(); err != nil {
 		return false, err
 	}
-	defer browser.Close()
 
 	page, err := browser.Page(proto.TargetCreateTarget{URL: h.cfg.WorkspaceURL})
 	if err != nil {
@@ -78,7 +84,11 @@ func (h *RodHarvester) Harvest(ctx context.Context, headless bool, timeout time.
 				}
 			}
 		}
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 	return false, nil
 }
@@ -135,7 +145,7 @@ func (h *RodHarvester) resolveBin() string {
 			return p
 		}
 	}
-	return "" // let rod locate or download a browser
+	return "" // fail closed: never let rod download and run a browser
 }
 
 func isXoxc(t string) bool { return len(t) > 5 && t[:5] == "xoxc-" }
@@ -152,4 +162,108 @@ func hasSuffixFold(s, suffix string) bool {
 		return false
 	}
 	return strEqFold(s[len(s)-len(suffix):], suffix)
+}
+
+// browserProc is a launched browser process.
+type browserProc struct {
+	cmd  *exec.Cmd
+	done chan struct{}
+	once sync.Once
+}
+
+// stop waits briefly for a graceful exit (after Browser.close), then kills.
+func (p *browserProc) stop(grace time.Duration) {
+	p.once.Do(func() {
+		select {
+		case <-p.done:
+		case <-time.After(grace):
+			_ = p.cmd.Process.Kill()
+			select {
+			case <-p.done:
+			case <-time.After(5 * time.Second):
+			}
+		}
+		time.Sleep(300 * time.Millisecond) // let the OS release profile file locks
+	})
+}
+
+// startBrowser launches the browser against the dedicated profile and returns
+// its DevTools websocket URL. We read DevToolsActivePort from the profile rather
+// than the browser's stderr: Edge on Windows does not print the URL there, which
+// makes rod's own launcher fail.
+func (h *RodHarvester) startBrowser(ctx context.Context, bin string, headless bool) (*browserProc, string, error) {
+	portFile := filepath.Join(h.cfg.ProfileDir, "DevToolsActivePort")
+	_ = os.Remove(portFile) // never trust a stale file from a previous run
+
+	args := []string{
+		"--user-data-dir=" + h.cfg.ProfileDir,
+		"--remote-debugging-port=0",
+		"--remote-allow-origins=http://127.0.0.1",
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-blink-features=AutomationControlled",
+		"--disable-background-networking",
+		"--disable-sync",
+	}
+	if headless {
+		args = append(args, "--headless=new")
+	}
+	args = append(args, "about:blank")
+
+	cmd := exec.Command(bin, args...)
+	var errOut limitedBuf
+	cmd.Stderr = &errOut
+	if err := cmd.Start(); err != nil {
+		return nil, "", fmt.Errorf("start browser: %w", err)
+	}
+	p := &browserProc{cmd: cmd, done: make(chan struct{})}
+	go func() { _ = cmd.Wait(); close(p.done) }()
+
+	deadline := time.Now().Add(30 * time.Second)
+	exited := p.done // the launcher process may exit after re-spawning the real browser
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			p.stop(0)
+			return nil, "", ctx.Err()
+		case <-exited:
+			exited = nil
+			if d := time.Now().Add(10 * time.Second); d.Before(deadline) {
+				deadline = d
+			}
+		case <-time.After(200 * time.Millisecond):
+		}
+		if b, err := os.ReadFile(portFile); err == nil {
+			lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+			if len(lines) >= 2 && strings.TrimSpace(lines[0]) != "" {
+				return p, "ws://127.0.0.1:" + strings.TrimSpace(lines[0]) + strings.TrimSpace(lines[1]), nil
+			}
+		}
+	}
+	p.stop(0)
+	return nil, "", fmt.Errorf("browser did not expose a debug port (is another browser using the dedicated profile?): %s", errOut.String())
+}
+
+// limitedBuf keeps the first few KB of output for error messages.
+type limitedBuf struct {
+	mu sync.Mutex
+	b  []byte
+}
+
+func (l *limitedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if room := 4096 - len(l.b); room > 0 {
+		if len(p) < room {
+			room = len(p)
+		}
+		l.b = append(l.b, p[:room]...)
+	}
+	return len(p), nil
+}
+
+func (l *limitedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.TrimSpace(string(l.b))
 }

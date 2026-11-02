@@ -17,9 +17,12 @@ import (
 
 // Credential is a captured Slack web session. Its fields are never logged.
 type Credential struct {
-	Token  string // xoxc-...
-	Cookie string // the d cookie value (xoxd-...)
+	Token  string `json:"-"` // xoxc-...
+	Cookie string `json:"-"` // the d cookie value (xoxd-...)
 }
+
+// GoString redacts the credential for %#v.
+func (c Credential) GoString() string { return c.String() }
 
 // String redacts the credential so it never leaks via %v/%s or logs.
 func (c Credential) String() string { return "Credential(" + c.FP() + ")" }
@@ -95,6 +98,9 @@ var (
 	ErrNotLoggedIn = errors.New("not signed in to Slack yet. Call the login tool and complete sign-in in the browser window")
 	// ErrNoSession means no usable session could be acquired.
 	ErrNoSession = errors.New("could not obtain a Slack session. Call the login tool and complete sign-in in the browser window")
+	// ErrNoBrowser means no supported browser was found. rod is never allowed to
+	// download one: this tool holds session credentials.
+	ErrNoBrowser = errors.New("no supported browser found (Edge or Chrome). Install one or set SLACK_LOCAL_BROWSER_BIN")
 	// ErrNotAllowed means the account is outside the configured team allow-list.
 	ErrNotAllowed = errors.New("the signed-in Slack workspace is not in the configured allow-list. Sign in with an allowed workspace, then call login")
 	// ErrAuthRejected means a freshly acquired credential was still rejected

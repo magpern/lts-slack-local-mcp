@@ -56,6 +56,8 @@ type SessionAuth struct {
 	cur        *candidate
 	rejected   map[string]bool
 	suspended  bool
+	epoch      uint64             // bumped by Logout and Login; a harvest from an older epoch is discarded
+	cancelHarv context.CancelFunc // cancels the in-flight harvest
 
 	// autoFirst allows an unattended first acquisition with no pinned identity.
 	// Used only with a static (environment-supplied) credential source.
@@ -138,6 +140,7 @@ func (s *SessionAuth) Login(ctx context.Context) (*Identity, error) {
 		}
 	}
 	s.mu.Lock()
+	s.epoch++
 	s.suspended = false
 	s.cur = nil
 	s.rejected = map[string]bool{}
@@ -155,14 +158,32 @@ func (s *SessionAuth) Login(ctx context.Context) (*Identity, error) {
 // in flight will find suspended=true when it completes and discard its result.
 func (s *SessionAuth) Logout(ctx context.Context) error {
 	s.mu.Lock()
+	s.epoch++
 	s.suspended = true
 	s.cur = nil
 	s.rejected = map[string]bool{}
-	if err := s.store.MarkSignedOut(); err != nil {
-		s.log.Warn("failed to persist signed-out state", zap.Error(err))
+	persistErr := s.store.MarkSignedOut()
+	if s.cancelHarv != nil {
+		s.cancelHarv() // stop any browser before touching its profile
 	}
+	s.waitIdleLocked(15 * time.Second)
 	s.mu.Unlock()
+	if persistErr != nil {
+		// Without a durable signed-out marker a restart would reconnect.
+		_ = s.deleteProfile()
+		return fmt.Errorf("could not persist the signed-out state: %w", persistErr)
+	}
 	return s.deleteProfile()
+}
+
+// waitIdleLocked waits (bounded) for the in-flight harvest to finish. s.mu held.
+func (s *SessionAuth) waitIdleLocked(max time.Duration) {
+	t := time.AfterFunc(max, func() { s.mu.Lock(); s.cond.Broadcast(); s.mu.Unlock() })
+	defer t.Stop()
+	deadline := time.Now().Add(max)
+	for s.harvesting && time.Now().Before(deadline) {
+		s.cond.Wait()
+	}
 }
 
 // deleteProfile removes the dedicated profile. The dirty flag is persisted
@@ -201,8 +222,14 @@ const (
 // callers wait on the cond and reuse the result.
 func (s *SessionAuth) acquire(ctx context.Context, mode acquireMode) (Credential, Identity, uint64, error) {
 	allowSwitch := mode == modeLogin
+	stop := context.AfterFunc(ctx, func() { s.mu.Lock(); s.cond.Broadcast(); s.mu.Unlock() })
+	defer stop()
 	s.mu.Lock()
 	for {
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return Credential{}, Identity{}, 0, err
+		}
 		if s.suspended {
 			s.mu.Unlock()
 			return Credential{}, Identity{}, 0, ErrSignedOut
@@ -230,22 +257,38 @@ func (s *SessionAuth) acquire(ctx context.Context, mode acquireMode) (Credential
 		}
 	}
 	s.harvesting = true
+	epoch := s.epoch
+	hctx, cancel := context.WithCancel(ctx)
+	s.cancelHarv = cancel
 	rejected := make(map[string]bool, len(s.rejected))
 	for k := range s.rejected {
 		rejected[k] = true
 	}
 	s.mu.Unlock()
 
-	accepted, refusals := s.runHarvest(ctx, pin, rejected, allowSwitch)
+	accepted, refusals := s.safeHarvest(hctx, pin, rejected, allowSwitch)
+	cancel()
 
 	s.mu.Lock()
 	s.harvesting = false
+	s.cancelHarv = nil
 	s.cond.Broadcast()
-	if s.suspended { // logout happened during the harvest: discard the result.
+	if s.suspended || s.epoch != epoch { // logout/login happened during the harvest: discard.
 		s.mu.Unlock()
-		return Credential{}, Identity{}, 0, ErrSignedOut
+		if s.suspended {
+			return Credential{}, Identity{}, 0, ErrSignedOut
+		}
+		return Credential{}, Identity{}, 0, context.Canceled
 	}
 	if accepted == nil {
+		// A proactive TTL refresh that fails must not discard a credential Slack
+		// has not rejected: keep serving it and retry the refresh later.
+		if !allowSwitch && s.cur != nil && !s.rejected[s.cur.cred.FP()] {
+			s.cur.refreshAt = s.clock().Add(time.Minute)
+			c, id, g := s.cur.cred, s.cur.id, s.gen
+			s.mu.Unlock()
+			return c, id, g, nil
+		}
 		s.mu.Unlock()
 		return Credential{}, Identity{}, 0, refusalError(refusals)
 	}
@@ -261,6 +304,18 @@ func (s *SessionAuth) acquire(ctx context.Context, mode acquireMode) (Credential
 		zap.String("cred", accepted.cred.FP()), zap.Uint64("generation", g))
 	s.mu.Unlock()
 	return accepted.cred, accepted.id, g, nil
+}
+
+// safeHarvest runs runHarvest, converting a panic in the harvester or validator
+// into a failed harvest so the single-harvester flag is always released.
+func (s *SessionAuth) safeHarvest(ctx context.Context, pin *Identity, rejected map[string]bool, interactive bool) (c *candidate, r map[string]bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			s.log.Error("harvest panicked", zap.Any("panic", rec))
+			c, r = nil, map[string]bool{}
+		}
+	}()
+	return s.runHarvest(ctx, pin, rejected, interactive)
 }
 
 // runHarvest performs the harvest without holding the mutex: headless first,
@@ -291,7 +346,7 @@ func (s *SessionAuth) runHarvest(ctx context.Context, pin *Identity, rejected ma
 	}
 
 	_, _ = s.harv.Harvest(ctx, true, s.cfg.HeadlessTimeout, accept)
-	if interactive && accepted == nil && len(refusals) == 0 {
+	if interactive && accepted == nil {
 		_, _ = s.harv.Harvest(ctx, false, s.cfg.LoginTimeout, accept)
 	}
 	return accepted, refusals

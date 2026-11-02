@@ -41,7 +41,7 @@ func (ap *ApiProvider) Session() *auth.SessionAuth { return ap.sess }
 // Connect acquires a credential (headless only; never opens a window) and binds
 // the Slack client, which also starts cache warming for the account.
 func (ap *ApiProvider) Connect(ctx context.Context) error {
-	_, err := ap.sc.connect(ctx)
+	_, _, err := ap.sc.connect(ctx)
 	return err
 }
 
@@ -68,6 +68,7 @@ func (ap *ApiProvider) Logout(ctx context.Context) (profileDeleted bool, err err
 		}
 	}
 	err = ap.sess.Logout(ctx)
+	ap.stopWarmers() // no cache write may land after logout
 	ap.sc.reset()
 	ap.bound.Store(nil)
 	ap.resetCaches()
@@ -95,12 +96,32 @@ func (ap *ApiProvider) bindIdentity(id auth.Identity) {
 	ap.usersCachePath, ap.channelsCachePath = up, cp
 	ap.pathsMu.Unlock()
 	if prev != nil {
+		ap.stopWarmers()
 		ap.resetCaches() // account switch: drop the previous user's data
 	}
 	if ap.skipCache.Load() {
 		return
 	}
-	go ap.warmCaches()
+	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	ap.warmMu.Lock()
+	ap.warmCancel = cancel
+	ap.warmMu.Unlock()
+	ap.warmWG.Add(1)
+	go func() {
+		defer ap.warmWG.Done()
+		defer cancel()
+		ap.warmCaches(ctx)
+	}()
+}
+
+// stopWarmers cancels any in-flight cache warm-up and waits for it to finish.
+func (ap *ApiProvider) stopWarmers() {
+	ap.warmMu.Lock()
+	if ap.warmCancel != nil {
+		ap.warmCancel()
+	}
+	ap.warmMu.Unlock()
+	ap.warmWG.Wait()
 }
 
 func (ap *ApiProvider) cachePath(id auth.Identity, name, envKey string) (string, error) {
@@ -110,9 +131,7 @@ func (ap *ApiProvider) cachePath(id auth.Identity, name, envKey string) (string,
 	return cachePathFor(id.TeamID, id.UserID, name)
 }
 
-func (ap *ApiProvider) warmCaches() {
-	ctx, cancel := bg()
-	defer cancel()
+func (ap *ApiProvider) warmCaches(ctx context.Context) {
 	if err := ap.RefreshUsers(ctx); err != nil {
 		ap.logger.Warn("users cache warm-up failed", zap.Error(err))
 	}
@@ -134,6 +153,12 @@ func (ap *ApiProvider) resetCaches() {
 func (ap *ApiProvider) removeCacheFiles(id auth.Identity) {
 	for _, name := range []string{"users_cache.json", "channels_cache_v2.json"} {
 		if p, err := cachePathFor(id.TeamID, id.UserID, name); err == nil {
+			_ = os.Remove(p)
+		}
+	}
+	// Also remove whatever paths are bound (including environment overrides).
+	for _, p := range []string{ap.usersPath(), ap.channelsPath()} {
+		if p != "" {
 			_ = os.Remove(p)
 		}
 	}

@@ -258,19 +258,26 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 		return nil, err
 	}
 
-	toolConfig := os.Getenv("SLACK_MCP_ADD_MESSAGE_MARK")
-	if toolConfig == "1" || toolConfig == "true" || toolConfig == "yes" {
-		err := ch.apiProvider.Slack().MarkConversationContext(ctx, params.channel, respTimestamp)
-		if err != nil {
-			ch.logger.Error("Slack MarkConversationContext failed", zap.Error(err))
-			return nil, err
+	// Marking as read is its own mutation: it needs the conversations_mark
+	// authorization too. The message is already posted, so a mark failure or
+	// denial is reported as a note, never as an error (which would invite a
+	// duplicate post).
+	note := ""
+	markCfg := strings.ToLower(strings.TrimSpace(os.Getenv("SLACK_MCP_ADD_MESSAGE_MARK")))
+	if markCfg == "1" || markCfg == "true" || markCfg == "yes" {
+		if _, aerr := authorizeMutation(toolConversationsMark); aerr != nil {
+			ch.logger.Warn("Mark after post skipped", zap.Error(aerr))
+			note = " (not marked as read: conversations_mark is not authorized)"
+		} else if merr := ch.apiProvider.Slack().MarkConversationContext(ctx, params.channel, respTimestamp); merr != nil {
+			ch.logger.Error("Slack MarkConversationContext failed", zap.Error(merr))
+			note = " (marking as read failed)"
 		}
 	}
 
 	if params.threadTs != "" {
-		return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s in thread %s (ts=%s)", respChannel, params.threadTs, respTimestamp)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s in thread %s (ts=%s)%s", respChannel, params.threadTs, respTimestamp, note)), nil
 	}
-	return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s (ts=%s)", respChannel, respTimestamp)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully posted message to channel %s (ts=%s)%s", respChannel, respTimestamp, note)), nil
 }
 
 // ReactionsAddHandler adds an emoji reaction to a message
@@ -1480,9 +1487,17 @@ func (ch *ConversationsHandler) marshalUnreadChannelsToCSV(channels []UnreadChan
 	return mcp.NewToolResultText(string(csvBytes)), nil
 }
 
+var canonicalConversationID = regexp.MustCompile(`^[CDG][A-Z0-9]{2,}$`)
+
 func isChannelAllowedForConfig(channel, config string) bool {
-	if config == "" || config == "true" || config == "1" {
+	switch strings.ToLower(strings.TrimSpace(config)) {
+	case "", "true", "1", "yes", "on":
 		return true
+	}
+	// A channel list is in force: only a canonical conversation ID can be matched
+	// reliably. Names, user IDs, other casing or padding could dodge a deny-list.
+	if !canonicalConversationID.MatchString(channel) {
+		return false
 	}
 	items := strings.Split(config, ",")
 	isNegated := strings.HasPrefix(strings.TrimSpace(items[0]), "!")

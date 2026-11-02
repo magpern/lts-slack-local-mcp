@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -300,5 +301,93 @@ func TestUnitOptedIn(t *testing.T) {
 		if got := optedIn(c.v, c.list); got != c.want {
 			t.Errorf("optedIn(%q, list=%v) = %v, want %v", c.v, c.list, got, c.want)
 		}
+	}
+}
+
+// Independent expectation of which opt-in variable unlocks which tool. Setting
+// ONLY one variable must unlock exactly its tools, so a wrong mapping (for
+// example join gated by the leave variable) fails here.
+var expectedOptIn = map[string]string{
+	toolAddMessage: "SLACK_MCP_ADD_MESSAGE_TOOL", toolReactionsAdd: "SLACK_MCP_REACTION_TOOL",
+	toolReactionsRemove: "SLACK_MCP_REACTION_TOOL", toolConversationsMark: "SLACK_MCP_MARK_TOOL",
+	toolConversationsJoin: "SLACK_MCP_JOIN_TOOL", toolConversationsLeave: "SLACK_MCP_LEAVE_TOOL",
+	toolUsergroupsCreate: "SLACK_MCP_USERGROUPS_WRITE_TOOL", toolUsergroupsUpdate: "SLACK_MCP_USERGROUPS_WRITE_TOOL",
+	toolUsergroupsUsersUpd: "SLACK_MCP_USERGROUPS_WRITE_TOOL", toolUsergroupsMe: "SLACK_MCP_USERGROUPS_WRITE_TOOL",
+	toolSavedUpdate: "SLACK_MCP_SAVED_WRITE_TOOL", toolSavedClear: "SLACK_MCP_SAVED_WRITE_TOOL",
+}
+
+func TestUnitEachOptInUnlocksExactlyItsTools(t *testing.T) {
+	vars := map[string]bool{}
+	for _, v := range expectedOptIn {
+		vars[v] = true
+	}
+	for v := range vars {
+		SetPolicy(Policy{Getenv: envFrom(map[string]string{v: "true"})})
+		for _, c := range inventory {
+			rec := &recordingSlack{}
+			err := c.call(newTestHandlers(rec))
+			want := expectedOptIn[c.name] == v
+			if want && err != nil {
+				t.Errorf("%s should be unlocked by %s: %v", c.name, v, err)
+			}
+			if !want && err == nil {
+				t.Errorf("%s must NOT be unlocked by %s", c.name, v)
+			}
+			if !want && len(rec.calls()) != 0 {
+				t.Errorf("%s reached Slack with only %s set: %v", c.name, v, rec.calls())
+			}
+		}
+	}
+}
+
+// Posting then marking as read: the mark is its own mutation and needs the
+// conversations_mark authorization; a mark problem never turns a successful
+// post into an error.
+func TestUnitAddMessageMarkRequiresMarkAuthorization(t *testing.T) {
+	t.Setenv("SLACK_MCP_ADD_MESSAGE_MARK", "true")
+	call := func(env map[string]string) ([]string, string, error) {
+		SetPolicy(Policy{Getenv: envFrom(env)})
+		rec := &recordingSlack{}
+		res, err := newTestHandlers(rec).conv.ConversationsAddMessageHandler(context.Background(),
+			req(map[string]any{"channel_id": "C1", "payload": "hi"}))
+		txt := ""
+		if res != nil && len(res.Content) > 0 {
+			if tc, ok := res.Content[0].(mcp.TextContent); ok {
+				txt = tc.Text
+			}
+		}
+		return rec.calls(), txt, err
+	}
+
+	calls, txt, err := call(map[string]string{"SLACK_MCP_ADD_MESSAGE_TOOL": "true"})
+	if err != nil {
+		t.Fatalf("post must succeed without the mark opt-in: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "PostMessage" {
+		t.Fatalf("only the post may happen without the mark opt-in, got %v", calls)
+	}
+	if !strings.Contains(txt, "not marked") {
+		t.Errorf("the skipped mark should be reported, got %q", txt)
+	}
+
+	calls, _, err = call(map[string]string{"SLACK_MCP_ADD_MESSAGE_TOOL": "true", "SLACK_MCP_MARK_TOOL": "true"})
+	if err != nil || len(calls) != 2 || calls[1] != "MarkConversation" {
+		t.Fatalf("with both opt-ins the post and the mark must happen, got %v %v", calls, err)
+	}
+}
+
+// A channel deny-list must not be dodged by names, other casing or padding.
+func TestUnitChannelDenyListCannotBeBypassed(t *testing.T) {
+	cfg := "!C0123ABCD"
+	for _, ch := range []string{"C0123ABCD", "c0123abcd", " C0123ABCD", "C0123ABCD ", "general", "U0123ABCD", "#general", ""} {
+		if isChannelAllowedForConfig(ch, cfg) {
+			t.Errorf("deny-list !C0123ABCD let %q through", ch)
+		}
+	}
+	if !isChannelAllowedForConfig("C0999ZZZZ", cfg) {
+		t.Error("an unlisted canonical channel ID should be allowed under a deny-list")
+	}
+	if !isChannelAllowedForConfig("C0999ZZZZ", "on") || !isChannelAllowedForConfig("anything", "YES") {
+		t.Error("plain on/yes flags mean no channel restriction")
 	}
 }

@@ -260,6 +260,10 @@ type ApiProvider struct {
 	bound     boundIdentity // account the caches currently belong to
 	skipCache atomic.Bool
 
+	warmMu     sync.Mutex // guards warmCancel
+	warmCancel context.CancelFunc
+	warmWG     sync.WaitGroup
+
 	pathsMu sync.RWMutex // guards usersCachePath / channelsCachePath
 
 	rateLimiter        *rate.Limiter

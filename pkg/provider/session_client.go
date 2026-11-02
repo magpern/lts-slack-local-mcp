@@ -94,12 +94,18 @@ func (s *sessionClient) realClient(cred auth.Credential) (*MCPSlackClient, error
 }
 
 // connect ensures an inner client exists for the current credential.
-func (s *sessionClient) connect(ctx context.Context) (*boundClient, error) {
+// On a bind failure it also returns a descriptor of the credential that failed,
+// so an authentication rejection can be scoped to that credential and generation.
+func (s *sessionClient) connect(ctx context.Context) (*boundClient, *boundClient, error) {
 	cred, id, gen, err := s.sess.Get(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.bind(cred, id, gen)
+	b, err := s.bind(cred, id, gen)
+	if err != nil {
+		return nil, &boundClient{gen: gen, fp: cred.FP(), id: id}, err
+	}
+	return b, nil, nil
 }
 
 func (s *sessionClient) bind(cred auth.Credential, id auth.Identity, gen uint64) (*boundClient, error) {
@@ -108,8 +114,8 @@ func (s *sessionClient) bind(cred auth.Credential, id auth.Identity, gen uint64)
 	}
 	s.buildMu.Lock()
 	defer s.buildMu.Unlock()
-	if b := s.cur.Load(); b != nil && b.gen == gen {
-		return b, nil
+	if b := s.cur.Load(); b != nil && b.gen >= gen {
+		return b, nil // never install an older generation over a newer one
 	}
 	c, err := s.newClient(cred)
 	if err != nil {
@@ -136,10 +142,10 @@ func (s *sessionClient) identity() (auth.Identity, bool) {
 
 // do runs fn against the current inner client, handling authentication failure.
 func (s *sessionClient) do(ctx context.Context, mutation bool, fn func(*MCPSlackClient) error) error {
-	b, err := s.connect(ctx)
-	if err != nil && isAuthError(err) {
+	b, failed, err := s.connect(ctx)
+	if err != nil && failed != nil && isAuthError(err) {
 		// The credential was rejected while building the client.
-		return s.recover(ctx, mutation, nil, err, fn)
+		return s.recover(ctx, mutation, failed, err, fn)
 	}
 	if err != nil {
 		return err
