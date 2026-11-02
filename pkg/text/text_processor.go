@@ -175,9 +175,9 @@ func richTextElementToText(elem slack.RichTextElement) string {
 		}
 		return strings.Join(parts, " ")
 	case *slack.RichTextQuote:
-		return richTextSectionToText((*slack.RichTextSection)(e))
+		return richTextSectionToText(&slack.RichTextSection{Elements: e.Elements})
 	case *slack.RichTextPreformatted:
-		return richTextSectionToText(&e.RichTextSection)
+		return richTextSectionToText(&slack.RichTextSection{Elements: e.Elements})
 	}
 	return ""
 }
