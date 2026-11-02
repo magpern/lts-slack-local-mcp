@@ -28,7 +28,7 @@ func (v *SlackValidator) Identify(ctx context.Context, c Credential) (*Identity,
 	if c.Token == "" {
 		return nil, fmt.Errorf("empty token")
 	}
-	httpClient := transport.ProvideHTTPClient(c.Cookies(), v.log)
+	httpClient := transport.ProvideHTTPClient(c.Cookies(), c.UserAgent, v.log)
 	client := slack.New(c.Token, slack.OptionHTTPClient(httpClient))
 	resp, err := client.AuthTestContext(ctx)
 	if err != nil {

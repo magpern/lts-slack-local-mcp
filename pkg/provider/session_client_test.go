@@ -235,3 +235,20 @@ func TestUnitOnBindRunsOutsideBuildLock(t *testing.T) {
 		t.Fatal("onBind ran under the build lock")
 	}
 }
+
+// An OAuth token supplied through the environment (no browser cookie) must bind;
+// only browser-session (xoxc) tokens require the d cookie.
+func TestUnitOAuthTokenWithoutCookieBinds(t *testing.T) {
+	sc := &sessionClient{log: zap.NewNop()}
+	if _, err := sc.realClient(auth.Credential{Token: "xoxc-1-2-3-abc"}); err == nil {
+		t.Error("an xoxc token without the d cookie must be rejected")
+	}
+	if _, err := sc.realClient(auth.Credential{}); err == nil {
+		t.Error("an empty credential must be rejected")
+	}
+	// xoxp passes the local check; it then fails only because no Slack answers.
+	_, err := sc.realClient(auth.Credential{Token: "xoxp-1-2-3-abc"})
+	if err != nil && strings.Contains(err.Error(), "invalid credential") {
+		t.Errorf("an xoxp token without a cookie must not be rejected locally: %v", err)
+	}
+}

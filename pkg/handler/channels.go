@@ -43,7 +43,7 @@ func NewChannelsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger) *
 }
 
 func (ch *ChannelsHandler) ChannelsResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	ch.logger.Debug("ChannelsResource called", zap.Any("params", request.Params))
+	ch.logger.Debug("ChannelsResource called", zap.Any("args", argKeys(request.Params)))
 
 	var channelList []Channel
 

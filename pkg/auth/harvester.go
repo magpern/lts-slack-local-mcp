@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/rod/lib/utils"
 	"go.uber.org/zap"
 )
 
@@ -52,7 +53,9 @@ func (h *RodHarvester) Harvest(ctx context.Context, headless bool, timeout time.
 	// Close politely on a fresh context (the caller's may already be cancelled),
 	// then make sure the process is gone so it cannot hold the profile. The
 	// profile directory itself is never deleted here: it is the persistent session.
-	browser := rod.New().ControlURL(controlURL).Context(ctx)
+	// Pin rod's debug switches: its -rod command-line flag could otherwise expose
+	// the signed-in browser on a network monitor port or trace to stdout (the MCP stream).
+	browser := rod.New().ControlURL(controlURL).Context(ctx).Trace(false).Monitor("").Logger(utils.LoggerQuiet)
 	connected := false
 	defer func() {
 		if connected { // Close on an unconnected browser would dereference a nil client
@@ -86,7 +89,7 @@ func (h *RodHarvester) Harvest(ctx context.Context, headless bool, timeout time.
 		token := h.readToken(page)
 		if token != "" {
 			if cookie := h.readDCookie(browser); cookie != "" {
-				if accept(Credential{Token: token, Cookie: cookie}) {
+				if accept(Credential{Token: token, Cookie: cookie, UserAgent: h.readUserAgent(page)}) {
 					return true, nil
 				}
 			}
@@ -98,6 +101,16 @@ func (h *RodHarvester) Harvest(ctx context.Context, headless bool, timeout time.
 		}
 	}
 	return false, nil
+}
+
+// readUserAgent returns the browser's own user agent (headless marker removed) so
+// API traffic matches the browser that minted the session.
+func (h *RodHarvester) readUserAgent(page *rod.Page) string {
+	res, err := page.Timeout(5 * time.Second).Eval(`() => navigator.userAgent`)
+	if err != nil || res == nil {
+		return ""
+	}
+	return strings.ReplaceAll(res.Value.Str(), "HeadlessChrome", "Chrome")
 }
 
 func (h *RodHarvester) readToken(page *rod.Page) string {

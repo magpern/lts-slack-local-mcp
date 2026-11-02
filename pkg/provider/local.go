@@ -131,10 +131,10 @@ func (ap *ApiProvider) cancelWarmers() {
 	ap.warmMu.Unlock()
 }
 
-func (ap *ApiProvider) cachePath(id auth.Identity, name, envKey string) (string, error) {
-	if v := os.Getenv(envKey); v != "" {
-		return v, nil
-	}
+// cachePath is always namespaced by workspace and user. The upstream
+// SLACK_MCP_USERS_CACHE / SLACK_MCP_CHANNELS_CACHE overrides are not honoured: one
+// shared file could serve a previous account's data after a switch.
+func (ap *ApiProvider) cachePath(id auth.Identity, name, _ string) (string, error) {
 	return cachePathFor(id.TeamID, id.UserID, name)
 }
 

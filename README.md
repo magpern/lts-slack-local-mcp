@@ -105,8 +105,11 @@ Channel lists match canonical conversation IDs only (`C…`, `D…`, `G…`).
 | `SLACK_MCP_LOG_LEVEL` | `debug`, `info`, `warn`, `error` (logs go to stderr; stdout is the MCP stream) |
 
 Removed from upstream: HTTP/SSE transports and API key, Docker/compose files, the embedded
-HTTP Toolkit CA, the insecure-TLS switch, TLS fingerprint impersonation, and the
-OpenAI/ngrok test harness.
+HTTP Toolkit CA, the insecure-TLS switch, TLS fingerprint impersonation, the demo mode,
+the cache-path overrides, and the OpenAI/ngrok test harness. `SLACK_MCP_GOVSLACK` is not
+supported and stops the server at startup. The profile and data directories must be new
+or empty (or already created by this tool); the tool never deletes a directory it did not
+create.
 
 ## Security posture
 

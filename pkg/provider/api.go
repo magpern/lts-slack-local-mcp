@@ -291,8 +291,8 @@ type ApiProvider struct {
 	fetchChannelsMu           sync.Mutex   // serializes fetchAndStoreChannels calls
 }
 
-func NewMCPSlackClient(token string, cookies []*http.Cookie, logger *zap.Logger) (*MCPSlackClient, error) {
-	httpClient := transport.ProvideHTTPClient(cookies, logger)
+func NewMCPSlackClient(token string, cookies []*http.Cookie, userAgent string, logger *zap.Logger) (*MCPSlackClient, error) {
+	httpClient := transport.ProvideHTTPClient(cookies, userAgent, logger)
 
 	slackOpts := []slack.Option{slack.OptionHTTPClient(httpClient)}
 	if os.Getenv("SLACK_MCP_GOVSLACK") == "true" {
@@ -348,18 +348,6 @@ func NewMCPSlackClient(token string, cookies []*http.Cookie, logger *zap.Logger)
 }
 
 func (c *MCPSlackClient) AuthTest() (*slack.AuthTestResponse, error) {
-	if os.Getenv("SLACK_MCP_XOXP_TOKEN") == "demo" || (os.Getenv("SLACK_MCP_XOXC_TOKEN") == "demo" && os.Getenv("SLACK_MCP_XOXD_TOKEN") == "demo") {
-		return &slack.AuthTestResponse{
-			URL:          "https://_.slack.com",
-			Team:         "Demo Team",
-			User:         "Username",
-			TeamID:       "TEAM123456",
-			UserID:       "U1234567890",
-			EnterpriseID: "",
-			BotID:        "",
-		}, nil
-	}
-
 	if c.authResponse != nil {
 		return c.authResponse, nil
 	}

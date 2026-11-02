@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"sort"
+
+	"github.com/mark3labs/mcp-go/mcp"
 	"fmt"
 	"os"
 	"slices"
@@ -132,4 +135,22 @@ func authorizeMutation(tool string) (string, error) {
 			tool, g.env)
 	}
 	return v, nil
+}
+
+// argKeys returns only the argument names of a tool call for debug logging:
+// values can be message text, search queries or other personal data.
+func argKeys(params any) []string {
+	var args map[string]any
+	switch p := params.(type) {
+	case mcp.CallToolParams:
+		args, _ = p.Arguments.(map[string]any)
+	case mcp.ReadResourceParams:
+		args = p.Arguments
+	}
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

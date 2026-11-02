@@ -34,7 +34,7 @@ func NewSavedHandler(apiProvider *provider.ApiProvider, logger *zap.Logger, conv
 }
 
 func (h *SavedHandler) SavedListHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	h.logger.Debug("SavedListHandler called", zap.Any("params", request.Params))
+	h.logger.Debug("SavedListHandler called", zap.Any("args", argKeys(request.Params)))
 
 	filter := request.GetString("filter", "saved")
 	limit := request.GetInt("limit", 50)
@@ -177,7 +177,7 @@ func (h *SavedHandler) SavedListHandler(ctx context.Context, request mcp.CallToo
 }
 
 func (h *SavedHandler) SavedUpdateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	h.logger.Debug("SavedUpdateHandler called", zap.Any("params", request.Params))
+	h.logger.Debug("SavedUpdateHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolSavedUpdate); err != nil {
 		h.logger.Warn("Mutation denied", zap.String("tool", toolSavedUpdate), zap.Error(err))
@@ -220,7 +220,7 @@ func (h *SavedHandler) SavedUpdateHandler(ctx context.Context, request mcp.CallT
 }
 
 func (h *SavedHandler) SavedClearCompletedHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	h.logger.Debug("SavedClearCompletedHandler called", zap.Any("params", request.Params))
+	h.logger.Debug("SavedClearCompletedHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolSavedClear); err != nil {
 		h.logger.Warn("Mutation denied", zap.String("tool", toolSavedClear), zap.Error(err))

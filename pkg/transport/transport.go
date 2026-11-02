@@ -39,6 +39,17 @@ var allowedHost = func(u *url.URL) bool {
 	return false
 }
 
+// cookieHost reports whether the Slack session cookie may be attached for u.
+func cookieHost(u *url.URL) bool {
+	host := strings.ToLower(u.Hostname())
+	for _, d := range []string{"slack.com", "slack-gov.com"} {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
 // UserAgentTransport wraps another RoundTripper to add User-Agent and cookies
 type UserAgentTransport struct {
 	roundTripper http.RoundTripper
@@ -69,11 +80,16 @@ func (t *UserAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 	clonedReq := req.Clone(req.Context())
 	clonedReq.Header.Set("User-Agent", t.userAgent)
 
-	for _, cookie := range t.cookies {
-		clonedReq.AddCookie(cookie)
+	// The session cookie is scoped like a browser would: slack.com hosts only,
+	// not the CDN or public-file domains that are merely allowed to be reached.
+	if cookieHost(req.URL) {
+		for _, cookie := range t.cookies {
+			clonedReq.AddCookie(cookie)
+		}
 	}
 
-	t.logger.Debug("Making request", zap.String("url", clonedReq.URL.String()))
+	// Host and path only: query strings and file names can be sensitive.
+	t.logger.Debug("Making request", zap.String("host", clonedReq.URL.Hostname()), zap.String("path", clonedReq.URL.Path))
 
 	resp, err := t.roundTripper.RoundTrip(clonedReq)
 	if err != nil {
@@ -83,7 +99,7 @@ func (t *UserAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 // ProvideHTTPClient creates the HTTP client used for every Slack request.
-func ProvideHTTPClient(cookies []*http.Cookie, logger *zap.Logger) *http.Client {
+func ProvideHTTPClient(cookies []*http.Cookie, userAgent string, logger *zap.Logger) *http.Client {
 	if os.Getenv("SLACK_MCP_CUSTOM_TLS") != "" {
 		logger.Fatal("SLACK_MCP_CUSTOM_TLS is no longer supported (TLS fingerprint impersonation was removed)")
 	}
@@ -92,9 +108,8 @@ func ProvideHTTPClient(cookies []*http.Cookie, logger *zap.Logger) *http.Client 
 	if proxyURL := os.Getenv("SLACK_MCP_PROXY"); proxyURL != "" {
 		parsed, err := url.Parse(proxyURL)
 		if err != nil {
-			logger.Fatal("Failed to parse proxy URL",
-				zap.String("proxy_url", proxyURL),
-				zap.Error(err))
+			// The URL may embed credentials: do not log it.
+			logger.Fatal("Failed to parse SLACK_MCP_PROXY")
 		}
 		proxy = http.ProxyURL(parsed)
 	}
@@ -124,7 +139,9 @@ func ProvideHTTPClient(cookies []*http.Cookie, logger *zap.Logger) *http.Client 
 		}
 	}
 
-	userAgent := defaultUA
+	if userAgent == "" {
+		userAgent = defaultUA
+	}
 	if ua := os.Getenv("SLACK_MCP_USER_AGENT"); ua != "" {
 		userAgent = ua
 	}

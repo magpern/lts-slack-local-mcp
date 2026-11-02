@@ -206,6 +206,10 @@ func (s *SessionAuth) deleteProfile() error {
 	if dir == "" {
 		return nil
 	}
+	wasDirty := s.store.ProfileDirty()
+	if exists, empty, ours := dirState(dir); exists && !empty && !ours && !wasDirty {
+		return ErrDirNotOwned // never delete a directory this tool did not create
+	}
 	_ = s.store.SetProfileDirty(true)
 	if err := s.removeAll(dir); err != nil {
 		q := dir + ".quarantined-" + s.clock().Format("20060102T150405")

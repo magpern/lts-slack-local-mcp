@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"unicode/utf8"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -145,7 +146,7 @@ func NewConversationsHandler(apiProvider *provider.ApiProvider, logger *zap.Logg
 
 // UsersResource streams a CSV of all users
 func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	ch.logger.Debug("UsersResource called", zap.Any("params", request.Params))
+	ch.logger.Debug("UsersResource called", zap.Any("args", argKeys(request.Params)))
 
 	// provider readiness
 	if ready, err := ch.apiProvider.IsReady(); !ready {
@@ -183,7 +184,7 @@ func (ch *ConversationsHandler) UsersResource(ctx context.Context, request mcp.R
 
 // ConversationsAddMessageHandler posts a message and returns a confirmation
 func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ConversationsAddMessageHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolAddMessage); err != nil {
 		ch.logger.Warn("Mutation denied", zap.String("tool", toolAddMessage), zap.Error(err))
@@ -276,7 +277,7 @@ func (ch *ConversationsHandler) ConversationsAddMessageHandler(ctx context.Conte
 
 // ReactionsAddHandler adds an emoji reaction to a message
 func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ReactionsAddHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ReactionsAddHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolReactionsAdd); err != nil {
 		ch.logger.Warn("Mutation denied", zap.String("tool", toolReactionsAdd), zap.Error(err))
@@ -317,7 +318,7 @@ func (ch *ConversationsHandler) ReactionsAddHandler(ctx context.Context, request
 
 // ReactionsRemoveHandler removes an emoji reaction from a message
 func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ReactionsRemoveHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ReactionsRemoveHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolReactionsRemove); err != nil {
 		ch.logger.Warn("Mutation denied", zap.String("tool", toolReactionsRemove), zap.Error(err))
@@ -357,7 +358,7 @@ func (ch *ConversationsHandler) ReactionsRemoveHandler(ctx context.Context, requ
 }
 
 func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("UsersSearchHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("UsersSearchHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if ready, err := ch.apiProvider.IsReady(); !ready {
 		ch.logger.Error("API provider not ready", zap.Error(err))
@@ -422,7 +423,7 @@ func (ch *ConversationsHandler) UsersSearchHandler(ctx context.Context, request 
 }
 
 func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("FilesGetHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("FilesGetHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolAttachmentGetData); err != nil {
 		ch.logger.Warn("Mutation denied", zap.String("tool", toolAttachmentGetData), zap.Error(err))
@@ -473,37 +474,39 @@ func (ch *ConversationsHandler) FilesGetHandler(ctx context.Context, request mcp
 
 	content := buf.Bytes()
 
-	// For image files, return as native MCP image content so the client
-	// can render them directly without base64-in-JSON overflow.
-	if isImageMimetype(fileInfo.Mimetype) {
-		imageData := base64.StdEncoding.EncodeToString(content)
-		metadata := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d}`,
-			fileInfo.ID,
-			escapeJSON(fileInfo.Name),
-			escapeJSON(fileInfo.Mimetype),
-			len(content))
-		return mcp.NewToolResultImage(metadata, imageData, fileInfo.Mimetype), nil
+	// For raster image files, return native MCP image content so the client can
+	// render them directly without base64-in-JSON overflow. SVG is markup that can
+	// carry script, so it is returned as text instead.
+	if isImageMimetype(fileInfo.Mimetype) && fileInfo.Mimetype != "image/svg+xml" {
+		meta, merr := json.Marshal(map[string]any{
+			"file_id": fileInfo.ID, "filename": fileInfo.Name, "mimetype": fileInfo.Mimetype, "size": len(content),
+		})
+		if merr != nil {
+			return nil, merr
+		}
+		return mcp.NewToolResultImage(string(meta), base64.StdEncoding.EncodeToString(content), fileInfo.Mimetype), nil
 	}
 
 	encoding := "none"
 	var contentStr string
 
-	if isTextMimetype(fileInfo.Mimetype) {
+	// The mimetype comes from whoever uploaded the file: only trust it as text if
+	// the bytes really are valid UTF-8.
+	if isTextMimetype(fileInfo.Mimetype) && utf8.Valid(content) {
 		contentStr = string(content)
 	} else {
 		contentStr = base64.StdEncoding.EncodeToString(content)
 		encoding = "base64"
 	}
 
-	result := fmt.Sprintf(`{"file_id":"%s","filename":"%s","mimetype":"%s","size":%d,"encoding":"%s","content":"%s"}`,
-		fileInfo.ID,
-		escapeJSON(fileInfo.Name),
-		escapeJSON(fileInfo.Mimetype),
-		len(content),
-		encoding,
-		escapeJSON(contentStr))
-
-	return mcp.NewToolResultText(result), nil
+	result, merr := json.Marshal(map[string]any{
+		"file_id": fileInfo.ID, "filename": fileInfo.Name, "mimetype": fileInfo.Mimetype,
+		"size": len(content), "encoding": encoding, "content": contentStr,
+	})
+	if merr != nil {
+		return nil, merr
+	}
+	return mcp.NewToolResultText(string(result)), nil
 }
 
 func isImageMimetype(mimetype string) bool {
@@ -524,18 +527,9 @@ func isTextMimetype(mimetype string) bool {
 	return textMimetypes[mimetype]
 }
 
-func escapeJSON(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	s = strings.ReplaceAll(s, "\n", `\n`)
-	s = strings.ReplaceAll(s, "\r", `\r`)
-	s = strings.ReplaceAll(s, "\t", `\t`)
-	return s
-}
-
 // ConversationsHistoryHandler streams conversation history as CSV
 func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsHistoryHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ConversationsHistoryHandler called", zap.Any("args", argKeys(request.Params)))
 
 	params, err := ch.parseParamsToolConversations(ctx, request)
 	if err != nil {
@@ -576,7 +570,7 @@ func (ch *ConversationsHandler) ConversationsHistoryHandler(ctx context.Context,
 
 // ConversationsRepliesHandler streams thread replies as CSV
 func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsRepliesHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ConversationsRepliesHandler called", zap.Any("args", argKeys(request.Params)))
 
 	params, err := ch.parseParamsToolConversations(ctx, request)
 	if err != nil {
@@ -613,14 +607,14 @@ func (ch *ConversationsHandler) ConversationsRepliesHandler(ctx context.Context,
 }
 
 func (ch *ConversationsHandler) ConversationsSearchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsSearchHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ConversationsSearchHandler called", zap.Any("args", argKeys(request.Params)))
 
 	params, err := ch.parseParamsToolSearch(ctx, request)
 	if err != nil {
 		ch.logger.Error("Failed to parse search params", zap.Error(err))
 		return nil, err
 	}
-	ch.logger.Debug("Search params parsed", zap.String("query", params.query), zap.Int("limit", params.limit), zap.Int("page", params.page))
+	ch.logger.Debug("Search params parsed", zap.Int("limit", params.limit), zap.Int("page", params.page))
 
 	searchParams := slack.SearchParameters{
 		Sort:          slack.DEFAULT_SEARCH_SORT,
@@ -667,7 +661,7 @@ type UnreadMessage struct {
 
 // ConversationsUnreadsHandler returns unread messages across all channels
 func (ch *ConversationsHandler) ConversationsUnreadsHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsUnreadsHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ConversationsUnreadsHandler called", zap.Any("args", argKeys(request.Params)))
 
 	params := ch.parseParamsToolUnreads(request)
 
@@ -1352,7 +1346,7 @@ func (ch *ConversationsHandler) getChannelDisplayName(info *slack.Channel, chann
 
 // ConversationsMarkHandler marks a channel as read up to a specific timestamp
 func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsMarkHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ConversationsMarkHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolConversationsMark); err != nil {
 		ch.logger.Warn("Mutation denied", zap.String("tool", toolConversationsMark), zap.Error(err))
@@ -1402,7 +1396,7 @@ func (ch *ConversationsHandler) ConversationsMarkHandler(ctx context.Context, re
 }
 
 func (ch *ConversationsHandler) ConversationsLeaveHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsLeaveHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ConversationsLeaveHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolConversationsLeave); err != nil {
 		ch.logger.Warn("Mutation denied", zap.String("tool", toolConversationsLeave), zap.Error(err))
@@ -1435,7 +1429,7 @@ func (ch *ConversationsHandler) ConversationsLeaveHandler(ctx context.Context, r
 }
 
 func (ch *ConversationsHandler) ConversationsJoinHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ch.logger.Debug("ConversationsJoinHandler called", zap.Any("params", request.Params))
+	ch.logger.Debug("ConversationsJoinHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolConversationsJoin); err != nil {
 		ch.logger.Warn("Mutation denied", zap.String("tool", toolConversationsJoin), zap.Error(err))

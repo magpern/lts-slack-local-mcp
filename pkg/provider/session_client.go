@@ -85,10 +85,13 @@ func newSessionClient(sess *auth.SessionAuth, log *zap.Logger, onBind func(auth.
 
 // realClient builds the production client, which validates with auth.test.
 func (s *sessionClient) realClient(cred auth.Credential) (*MCPSlackClient, error) {
-	if cred.Token == "" || cred.Cookie == "" {
-		return nil, fmt.Errorf("invalid credential: a Slack web session needs both the token and the d cookie")
+	if cred.Token == "" {
+		return nil, fmt.Errorf("invalid credential: no token")
 	}
-	return NewMCPSlackClient(cred.Token, cred.Cookies(), s.log)
+	if strings.HasPrefix(cred.Token, "xoxc-") && cred.Cookie == "" {
+		return nil, fmt.Errorf("invalid credential: a Slack web session token needs the d cookie")
+	}
+	return NewMCPSlackClient(cred.Token, cred.Cookies(), cred.UserAgent, s.log)
 }
 
 // connect ensures an inner client exists for the current credential.
@@ -250,7 +253,13 @@ func (s *sessionClient) GetFileInfoContext(ctx context.Context, id string, count
 }
 
 func (s *sessionClient) GetFileContext(ctx context.Context, url string, w io.Writer) error {
-	return s.do(ctx, false, func(c *MCPSlackClient) error { return c.GetFileContext(ctx, url, w) })
+	return s.do(ctx, false, func(c *MCPSlackClient) error {
+		// A retry after re-login must not append to bytes from the failed attempt.
+		if r, ok := w.(interface{ Reset() }); ok {
+			r.Reset()
+		}
+		return c.GetFileContext(ctx, url, w)
+	})
 }
 
 func (s *sessionClient) GetConversationInfoContext(ctx context.Context, in *slack.GetConversationInfoInput) (r *slack.Channel, err error) {

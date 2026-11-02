@@ -2,13 +2,16 @@
 
 package auth
 
-import "os/exec"
+import (
+	"os/exec"
+	"regexp"
+)
 
-// killProfileProcesses stops any browser process whose command line references
-// the dedicated profile directory, so an orphan cannot keep the profile locked.
+// killProfileProcesses stops processes launched with exactly this
+// --user-data-dir, so an orphan cannot keep the dedicated profile locked.
 func killProfileProcesses(profileDir string) {
 	if profileDir == "" {
 		return
 	}
-	_ = exec.Command("pkill", "-f", "--", "--user-data-dir="+profileDir).Run()
+	_ = exec.Command("pkill", "-f", "--", "--user-data-dir="+regexp.QuoteMeta(profileDir)+"( |$)").Run()
 }

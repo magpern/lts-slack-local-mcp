@@ -246,6 +246,19 @@ func do(ctx context.Context, cl httpClient, req *http.Request) (*http.Response, 
 	req.Header.Set("Accept-Language", "en-NZ,en-AU;q=0.9,en;q=0.8")
 	req.Header.Set("User-Agent", defaultUserAgent)
 
+	// Buffer the body so a rate-limit retry can resend it in full (a consumed
+	// body would go out empty, without the token, and look like an auth failure).
+	if req.Body != nil && req.GetBody == nil {
+		b, rerr := io.ReadAll(req.Body)
+		req.Body.Close()
+		if rerr != nil {
+			return nil, rerr
+		}
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
+		req.Body, _ = req.GetBody()
+		req.ContentLength = int64(len(b))
+	}
+
 	rgn := trace.StartRegion(ctx, "http.Do")
 	resp, err := cl.Do(req)
 	rgn.End()
@@ -257,9 +270,22 @@ func do(ctx context.Context, cl httpClient, req *http.Request) (*http.Response, 
 		if err != nil {
 			return nil, err
 		}
+		resp.Body.Close()
+		if wait > maxRetryWait {
+			wait = maxRetryWait
+		}
 		lg.InfoContext(ctx, "got rate limited, waiting", "delay", wait)
 
-		time.Sleep(wait)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+		if req.GetBody != nil {
+			if req.Body, err = req.GetBody(); err != nil {
+				return nil, err
+			}
+		}
 		resp, err = cl.Do(req)
 		if err != nil {
 			return nil, err
@@ -275,12 +301,15 @@ func do(ctx context.Context, cl httpClient, req *http.Request) (*http.Response, 
 		}
 	}
 	if resp.StatusCode < http.StatusOK || http.StatusMultipleChoices <= resp.StatusCode {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512)) // truncated: it is logged and shown to the model
 		resp.Body.Close()
 		return nil, slack.StatusCodeError{Code: resp.StatusCode, Status: string(body)}
 	}
 	return resp, err
 }
+
+// maxRetryWait caps how long a server-supplied Retry-After may stall a call.
+const maxRetryWait = 30 * time.Second
 
 func parseRetryAfter(resp *http.Response) (time.Duration, error) {
 	strWait := resp.Header.Get("Retry-After")

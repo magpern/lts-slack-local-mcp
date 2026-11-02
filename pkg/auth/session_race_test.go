@@ -2,6 +2,9 @@ package auth
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -217,5 +220,61 @@ func TestUnitStaleHarvestDiscardedByEpochAfterLogoutTimeout(t *testing.T) {
 	}
 	if p := store.Pin(); p == nil || p.UserID != "U2" {
 		t.Fatalf("pin = %v", p)
+	}
+}
+
+// A configured directory that exists, is not empty and was not created by this
+// tool must never be deleted, claimed, or have its processes killed.
+func TestUnitForeignDirectoryIsNeverDeletedOrClaimed(t *testing.T) {
+	sa, store, cfg := newTestAuth(t, &fakeHarvester{}, twoAccounts())
+	if err := os.MkdirAll(cfg.ProfileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	precious := filepath.Join(cfg.ProfileDir, "Local State")
+	if err := os.WriteFile(precious, []byte("user data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sa.Logout(context.Background()); err == nil || !errors.Is(err, ErrDirNotOwned) {
+		t.Fatalf("Logout must refuse to delete a foreign directory, got %v", err)
+	}
+	if _, err := os.Stat(precious); err != nil {
+		t.Fatal("a foreign file was deleted")
+	}
+	if err := secureMkdirAll(cfg.ProfileDir); !errors.Is(err, ErrDirNotOwned) {
+		t.Fatalf("claiming a foreign non-empty dir must fail, got %v", err)
+	}
+	_ = store
+}
+
+func TestUnitOwnedDirectoryIsDeleted(t *testing.T) {
+	sa, _, cfg := newTestAuth(t, &fakeHarvester{}, twoAccounts())
+	if err := secureMkdirAll(cfg.ProfileDir); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(cfg.ProfileDir, "Cookies"), []byte("x"), 0o600)
+	if err := sa.Logout(context.Background()); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if _, err := os.Stat(cfg.ProfileDir); !os.IsNotExist(err) {
+		t.Fatal("our own profile should be deleted")
+	}
+}
+
+func TestUnitHasUserDataDirArgIsExact(t *testing.T) {
+	dir := `C:\Users\me\AppData\Local\lts-slack-local-mcp\profile`
+	for cmdline, want := range map[string]bool{
+		`msedge.exe --user-data-dir=` + dir + ` about:blank`:                            true,
+		`msedge.exe "--user-data-dir=` + dir + `" about:blank`:                          true,
+		`msedge.exe --user-data-dir=` + dir:                                             true,
+		`msedge.exe --user-data-dir=` + dir + `2 about:blank`:                           false, // longer path
+		`msedge.exe --user-data-dir=C:\Users\me\AppData\Local\Microsoft\Edge\User Data`: false,
+		`msedge.exe --profile-directory=Default`:                                        false,
+	} {
+		if got := hasUserDataDirArg(cmdline, dir); got != want {
+			t.Errorf("%q: got %v want %v", cmdline, got, want)
+		}
+	}
+	if !isBrowserName("msedge.exe") || isBrowserName("notepad.exe") || isBrowserName("powershell.exe") {
+		t.Error("browser name matching is wrong")
 	}
 }

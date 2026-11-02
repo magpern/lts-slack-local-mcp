@@ -262,3 +262,26 @@ Deviations from the frozen plan, each with reason and impact.
    resolve for Azure AD accounts, and had already removed inherited access —
    leaving the directory inaccessible. Found by an end-to-end protocol probe and
    fixed with regression tests.
+8. **The browser is launched directly, not through rod's launcher.** Reason:
+   rod's launcher could not start Edge on Windows (it waits for a debug URL on
+   stderr that Edge does not print) and its cleanup deletes the user-data dir, which
+   here is the persistent session. The harvester starts the installed browser,
+   reads `DevToolsActivePort` from the profile, and never deletes the profile.
+9. **TLS fingerprint impersonation (uTLS) was dropped instead of kept** (Phase 4
+   said to keep it optionally). Reason: it had connection leaks, no handshake
+   timeout, and the generic `*_Auto` profile does not match the real browser anyway.
+   `SLACK_MCP_CUSTOM_TLS` now stops the server with an error. API traffic uses the
+   harvested browser's own user agent.
+10. **The HTTP client only talks HTTPS to Slack-owned hosts** (including redirect
+    hops); the session cookie is attached only for `slack.com`/`slack-gov.com`
+    hosts. Reason: closes the cookie/token exfiltration path via file URLs and redirects.
+11. **Cache path overrides (`SLACK_MCP_USERS_CACHE`/`SLACK_MCP_CHANNELS_CACHE`) are
+    not honoured, and `SLACK_MCP_GOVSLACK` is refused at startup.** Reason: a shared
+    cache file can serve a previous account's data; GovSlack sign-in/validation was
+    never implemented here, so it would silently break login.
+12. **The profile and data directories carry an ownership marker.** The tool only
+    deletes, claims, ACL-locks or kills processes for directories it created (or
+    empty ones). Reason: a misconfigured `SLACK_LOCAL_PROFILE_DIR` must not wipe a
+    real browser profile or home folder.
+13. **Tool arguments are not logged** (not at Info, and only argument names at
+    Debug). Reason: they can contain message text and search queries.

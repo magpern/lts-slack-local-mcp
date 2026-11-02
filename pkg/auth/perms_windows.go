@@ -29,10 +29,10 @@ func lockdown(dir string) error {
 	if err != nil {
 		return fmt.Errorf("resolve current user: %w", err)
 	}
-	if out, err := exec.Command("icacls", dir, "/grant:r", "*"+sid+":(OI)(CI)F").CombinedOutput(); err != nil {
+	if out, err := exec.Command(system32("icacls.exe"), dir, "/grant:r", "*"+sid+":(OI)(CI)F").CombinedOutput(); err != nil {
 		return fmt.Errorf("icacls grant: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := exec.Command("icacls", dir, "/inheritance:r").CombinedOutput(); err != nil {
+	if out, err := exec.Command(system32("icacls.exe"), dir, "/inheritance:r").CombinedOutput(); err != nil {
 		return fmt.Errorf("icacls inheritance: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil

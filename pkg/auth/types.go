@@ -20,6 +20,10 @@ import (
 type Credential struct {
 	Token  string `json:"-"` // xoxc-...
 	Cookie string `json:"-"` // the d cookie value (xoxd-...)
+	// UserAgent is the browser's own user agent when the credential was
+	// harvested, so API traffic matches the browser that minted the session.
+	// It is not part of the credential's identity (FP).
+	UserAgent string `json:"-"`
 }
 
 // GoString redacts the credential for %#v.
@@ -44,6 +48,9 @@ func (c Credential) Cookies() []*http.Cookie {
 	// The browser's d cookie is already URL-escaped; a value supplied by hand may
 	// not be, so escape anything that is not URL-safe (never double-escape %).
 	val := c.Cookie
+	if val == "" {
+		return nil // OAuth tokens (xoxp/xoxb) carry no browser cookie
+	}
 	if !urlSafeCookie.MatchString(val) {
 		val = url.QueryEscape(val)
 	}

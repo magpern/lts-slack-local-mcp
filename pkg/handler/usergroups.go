@@ -40,7 +40,7 @@ func NewUsergroupsHandler(apiProvider *provider.ApiProvider, logger *zap.Logger)
 
 // UsergroupsListHandler lists all user groups in the workspace
 func (h *UsergroupsHandler) UsergroupsListHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	h.logger.Debug("UsergroupsListHandler called", zap.Any("params", request.Params))
+	h.logger.Debug("UsergroupsListHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if ready, err := h.apiProvider.IsReady(); !ready {
 		h.logger.Error("API provider not ready", zap.Error(err))
@@ -97,7 +97,7 @@ func (h *UsergroupsHandler) UsergroupsListHandler(ctx context.Context, request m
 
 // UsergroupsCreateHandler creates a new user group
 func (h *UsergroupsHandler) UsergroupsCreateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	h.logger.Debug("UsergroupsCreateHandler called", zap.Any("params", request.Params))
+	h.logger.Debug("UsergroupsCreateHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolUsergroupsCreate); err != nil {
 		h.logger.Warn("Mutation denied", zap.String("tool", toolUsergroupsCreate), zap.Error(err))
@@ -166,7 +166,7 @@ func (h *UsergroupsHandler) UsergroupsCreateHandler(ctx context.Context, request
 
 // UsergroupsUpdateHandler updates an existing user group's metadata
 func (h *UsergroupsHandler) UsergroupsUpdateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	h.logger.Debug("UsergroupsUpdateHandler called", zap.Any("params", request.Params))
+	h.logger.Debug("UsergroupsUpdateHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolUsergroupsUpdate); err != nil {
 		h.logger.Warn("Mutation denied", zap.String("tool", toolUsergroupsUpdate), zap.Error(err))
@@ -246,7 +246,7 @@ func (h *UsergroupsHandler) UsergroupsUpdateHandler(ctx context.Context, request
 
 // UsergroupsUsersUpdateHandler updates the members of a user group
 func (h *UsergroupsHandler) UsergroupsUsersUpdateHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	h.logger.Debug("UsergroupsUsersUpdateHandler called", zap.Any("params", request.Params))
+	h.logger.Debug("UsergroupsUsersUpdateHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if _, err := authorizeMutation(toolUsergroupsUsersUpd); err != nil {
 		h.logger.Warn("Mutation denied", zap.String("tool", toolUsergroupsUsersUpd), zap.Error(err))
@@ -309,7 +309,7 @@ func (h *UsergroupsHandler) UsergroupsUsersUpdateHandler(ctx context.Context, re
 
 // UsergroupsMeHandler allows the current user to list their groups, join or leave a user group
 func (h *UsergroupsHandler) UsergroupsMeHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	h.logger.Debug("UsergroupsMeHandler called", zap.Any("params", request.Params))
+	h.logger.Debug("UsergroupsMeHandler called", zap.Any("args", argKeys(request.Params)))
 
 	if ready, err := h.apiProvider.IsReady(); !ready {
 		h.logger.Error("API provider not ready", zap.Error(err))

@@ -53,6 +53,11 @@ func main() {
 		)
 	}
 
+	if os.Getenv("SLACK_MCP_GOVSLACK") != "" {
+		logger.Fatal("SLACK_MCP_GOVSLACK is not supported: sign-in, validation and cookies are only implemented for slack.com",
+			zap.String("context", "console"))
+	}
+
 	err = server.ValidateEnabledTools(enabledTools)
 	if err != nil {
 		logger.Fatal("error in SLACK_MCP_ENABLED_TOOLS",
