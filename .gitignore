@@ -15,3 +15,13 @@
 /npm/slack-mcp-server/LICENSE
 /npm/slack-mcp-server/README.md
 docker-compose.release.yml
+
+# lts-slack-local-mcp: local-only artifacts, never commit
+/profile/
+**/profile/
+*.har
+result*.json
+node_modules/
+*.exe
+.env.*
+# dedicated browser profile lives under the OS data dir at runtime, never in-repo

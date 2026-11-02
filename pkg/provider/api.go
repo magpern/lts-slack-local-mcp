@@ -15,9 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
-	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
-	"github.com/korotovsky/slack-mcp-server/pkg/transport"
+	"github.com/magpern/lts-slack-local-mcp/pkg/limiter"
+	"github.com/magpern/lts-slack-local-mcp/pkg/provider/edge"
+	"github.com/magpern/lts-slack-local-mcp/pkg/transport"
 	"github.com/rusq/slackdump/v3/auth"
 	"github.com/slack-go/slack"
 	"go.uber.org/zap"
@@ -413,7 +413,7 @@ func (c *MCPSlackClient) JoinConversationContext(ctx context.Context, channelID 
 }
 
 func (c *MCPSlackClient) GetConversationsContext(ctx context.Context, params *slack.GetConversationsParameters) ([]slack.Channel, string, error) {
-	// Please see https://github.com/korotovsky/slack-mcp-server/issues/73
+	// Please see https://github.com/magpern/lts-slack-local-mcp/issues/73
 	// It seems that `conversations.list` works with `xoxp` tokens within Enterprise Grid setups
 	// and if `xoxc`/`xoxd` defined we fallback to edge client.
 	// In non Enterprise Grid setups we always use `conversations.list` api as it accepts both token types wtf.

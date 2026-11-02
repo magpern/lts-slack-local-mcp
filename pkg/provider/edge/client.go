@@ -4,8 +4,8 @@ import (
 	"context"
 	"runtime/trace"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
-	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge/fasttime"
+	"github.com/magpern/lts-slack-local-mcp/pkg/limiter"
+	"github.com/magpern/lts-slack-local-mcp/pkg/provider/edge/fasttime"
 	"github.com/rusq/slack"
 )
 

@@ -6,7 +6,7 @@ import (
 	"runtime/trace"
 	"time"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge/fasttime"
+	"github.com/magpern/lts-slack-local-mcp/pkg/provider/edge/fasttime"
 	"github.com/rusq/slack"
 )
 

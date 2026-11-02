@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
+	"github.com/magpern/lts-slack-local-mcp/pkg/limiter"
 	"github.com/rusq/slack"
 	"golang.org/x/sync/errgroup"
 )

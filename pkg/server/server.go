@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/handler"
-	"github.com/korotovsky/slack-mcp-server/pkg/provider"
-	"github.com/korotovsky/slack-mcp-server/pkg/server/auth"
-	"github.com/korotovsky/slack-mcp-server/pkg/text"
-	"github.com/korotovsky/slack-mcp-server/pkg/version"
+	"github.com/magpern/lts-slack-local-mcp/pkg/handler"
+	"github.com/magpern/lts-slack-local-mcp/pkg/provider"
+	"github.com/magpern/lts-slack-local-mcp/pkg/server/auth"
+	"github.com/magpern/lts-slack-local-mcp/pkg/text"
+	"github.com/magpern/lts-slack-local-mcp/pkg/version"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"go.uber.org/zap"
@@ -405,7 +405,7 @@ func NewMCPServer(provider *provider.ApiProvider, logger *zap.Logger, enabledToo
 			),
 			mcp.WithNumber("limit",
 				mcp.DefaultNumber(100),
-				mcp.Description("The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999)."), // context fix for cursor: https://github.com/korotovsky/slack-mcp-server/issues/7
+				mcp.Description("The maximum number of items to return. Must be an integer between 1 and 1000 (maximum 999)."), // context fix for cursor: https://github.com/magpern/lts-slack-local-mcp/issues/7
 			),
 			mcp.WithString("cursor",
 				mcp.Description("Cursor for pagination. Use the value of the last row and column in the response as next_cursor field returned from the previous request."),

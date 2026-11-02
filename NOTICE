@@ -1,0 +1,16 @@
+lts-slack-local-mcp
+
+This project is a derivative work of:
+
+  slack-mcp-server
+  Copyright (c) 2025 Dmitrii Korotovskii
+  Licensed under the MIT License.
+  https://github.com/korotovsky/slack-mcp-server
+
+The original MIT License text is retained in the LICENSE file. Portions of this
+repository are copied or adapted from that upstream project at tag v1.3.0
+(commit a079b3cd4d5836d791c942a9fc107987e7865b37).
+
+The browser-session authentication lifecycle is an independent Go
+re-implementation inspired by the design of a separate browser-session login
+project; no source code from that project is included here.

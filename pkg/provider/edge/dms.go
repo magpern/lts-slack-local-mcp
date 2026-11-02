@@ -4,7 +4,7 @@ import (
 	"context"
 	"runtime/trace"
 
-	"github.com/korotovsky/slack-mcp-server/pkg/limiter"
+	"github.com/magpern/lts-slack-local-mcp/pkg/limiter"
 )
 
 // im.* API

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/gocarina/gocsv"
-	"github.com/korotovsky/slack-mcp-server/pkg/provider/edge"
+	"github.com/magpern/lts-slack-local-mcp/pkg/provider/edge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
