@@ -1,38 +1,32 @@
 # Security Policy
 
-## Supported Versions
+## Reporting a vulnerability
 
-Actively maintained and supported are the following versions:
+Please do not open a public issue. Use GitHub's private vulnerability reporting
+for this repository (Security tab, "Report a vulnerability"). Include steps to
+reproduce, the affected version, and the impact you see.
 
-| Version   | Supported          |
-|-----------|--------------------|
-| `1.1.x`   | ✅                 |
+## Scope and threat model
 
-If you're using an unsupported version, we strongly recommend upgrading to the latest release.
+This is a local-only MCP server that acts as the signed-in user through a Slack
+web session (an `xoxc` token plus the `d` cookie) read from a dedicated browser
+profile on the same machine. It is a stdio process: it opens no listening
+socket and has no server component.
 
-## Reporting a Vulnerability
+What the design protects:
 
-If you discover a security vulnerability, **please do not create a public issue**.
+- Session credentials are held in process memory and in the dedicated browser
+  profile. The application does not separately write extracted tokens or cookies
+  anywhere. Logs carry only a short SHA-256 fingerprint.
+- Every request, including redirect hops, must be HTTPS to a Slack-owned host;
+  anything else is refused before the session is attached.
+- State-changing tools are off by default and need a dedicated environment
+  opt-in in addition to any tool allow-list.
+- Logout is persisted across restarts and deletes the dedicated profile and the
+  cached Slack data. Local deletion is not server-side revocation: it does not
+  sign you out of Slack elsewhere.
 
-Instead, follow these steps:
-
-1. **Email directly at:** [dmitry@korotovsky.io](mailto:dmitry@korotovsky.io)
-2. Provide as much detail as possible, including:
-   - Steps to reproduce the vulnerability
-   - Affected versions
-   - Potential impact
-   - Any suggested remediation (if available)
-
-## What to Expect
-
-- We will confirm receipt of your report.
-- We will investigate the issue and may reach out for further details.
-- Once the issue is confirmed and a fix is developed, we will coordinate a release.
-
-## Responsible Disclosure
-
-We kindly ask that you:
-- Do not publicly disclose the vulnerability until we have released a fix.
-- Give us adequate time to address the issue.
-
-Your help in keeping this project and its users secure is highly appreciated. 💙
+What it does not protect against: other processes running as the same user
+(they can read the profile directory like any browser profile), and an
+administrator who forbids session-based access to the workspace. Confirm your
+organization's policy before use.
