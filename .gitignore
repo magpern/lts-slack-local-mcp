@@ -1,27 +1,22 @@
-.idea
-.env
+# build and release output
+dist/
+plugin/bin/
+*.exe
+/slack-mcp-server
+
+# local session material and secrets: never commit
+.env*
+profile/
+state/
+*.har
+session.json
+*.quarantined-*
+tape.txt
 .users_cache.json
 .channels_cache.json
 .channels_cache_v2.json
-/extension.dxt/server/slack-mcp-server-*
-/extension.dxt/server/index.js
-/build/slack-mcp-server-*
-/build/slack-mcp-server.dxt
-/build/slack-mcp-server
-/slack-mcp-server
-/npm/slack-mcp-server-*/bin/slack-mcp-server-*
-/npm/slack-mcp-server-*/.npmrc
-/npm/slack-mcp-server/.npmrc
-/npm/slack-mcp-server/LICENSE
-/npm/slack-mcp-server/README.md
-docker-compose.release.yml
 
-# lts-slack-local-mcp: local-only artifacts, never commit
-/profile/
-**/profile/
-*.har
+# misc
+.idea
 result*.json
 node_modules/
-*.exe
-.env.*
-# dedicated browser profile lives under the OS data dir at runtime, never in-repo

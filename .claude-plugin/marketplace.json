@@ -1,0 +1,11 @@
+{
+  "name": "lts-slack-local-mcp",
+  "owner": { "name": "magpern" },
+  "plugins": [
+    {
+      "name": "slack-local",
+      "source": "./plugin",
+      "description": "Experimental: read your Slack workspace as yourself through your own browser session. Local only, read-only by default."
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "slack": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/slack-mcp"
+    }
+  }
+}
